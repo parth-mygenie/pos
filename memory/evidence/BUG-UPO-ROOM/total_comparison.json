@@ -1,0 +1,29 @@
+{
+  "order_id": 1232501,
+  "restaurant_order_id": "000090",
+  "room": "r5",
+  "customer": "boiler",
+  "employee_orders_list": {
+    "order_amount": 1325.1,
+    "room_info_balance_payment": 2150,
+    "associated_order_list_count": 3,
+    "associated_total": 437,
+    "computed_card_amount": 3912.1
+  },
+  "get_single_order_new": {
+    "order_amount": 1326,
+    "room_info_balance_payment": 2000,
+    "associated_order_list_count": 3,
+    "associated_total": 437,
+    "if_used_directly": 3763
+  },
+  "after_socket_update_observed": {
+    "card_shows": 3326,
+    "formula": "1326 (food) + 0 (NO transfers \u2014 stripped) + 2000 (raw room balance)",
+    "CONCLUSION": "socket update-order payload strips associated_order_list"
+  },
+  "after_reload_observed": {
+    "card_shows": 3912.1,
+    "formula": "1325.1 + 437 + 2150 = 3912.1 (matches employee-orders-list data)"
+  }
+}
