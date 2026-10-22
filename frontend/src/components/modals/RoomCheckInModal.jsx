@@ -6,16 +6,15 @@
 import { useState, useMemo, useEffect, useRef, useCallback } from 'react';
 import {
   X, User, Phone, Mail, Users, Calendar, CreditCard, FileText, Camera,
-  Loader2, ArrowLeft, Plus, ChevronDown, CheckCircle, Clock,
+  Loader2, ArrowLeft, Plus, ChevronDown, CheckCircle, Clock, ShieldCheck,
 } from 'lucide-react';
 import imageCompression from 'browser-image-compression';
-import { isValidPhoneNumber } from 'libphonenumber-js';
-import PhoneInput from 'react-phone-number-input';
-import 'react-phone-number-input/style.css';
+import { getDocuments, uploadDocument } from '../../api/services/documentService'; // CR-129 + INV-003
+import { computeRoomGst } from '../../utils/roomGstCalculator'; // BUG-410
 
 import { COLORS } from '../../constants';
 import * as roomService from '../../api/services/roomService';
-import { searchCustomers } from '../../api/services/customerService';
+import { searchCustomers, lookupCustomer, createCustomer, updateCustomer } from '../../api/services/customerService';
 import { useToast } from '../../hooks/use-toast';
 import { useRestaurant } from '../../contexts/RestaurantContext';
 
@@ -155,40 +154,74 @@ const RadioPillGroup = ({ label, required, options, value, onChange, testIdPrefi
   </div>
 );
 
-const FileField = ({ label, required, file, error, busy, onChange, testId }) => {
+// CR-129: FileField with ID-card ratio thumbnail preview
+const FileField = ({ label, required, file, error, busy, onChange, onRemove, testId, docLabel }) => {
   const inputRef = useRef(null);
-  const handlePick = () => inputRef.current?.click();
+  const isPdf = file && (file.type === 'application/pdf' || /\.pdf$/i.test(file.name));
+  const previewUrl = file && !isPdf ? URL.createObjectURL(file) : null;
+
   return (
     <div>
       {label && <FieldLabel required={required}>{label}</FieldLabel>}
-      <button
-        type="button"
-        onClick={handlePick}
-        className="flex items-center gap-1.5 border rounded-lg px-2.5 py-1.5 cursor-pointer hover:bg-gray-50 transition-colors w-full"
-        style={{
-          borderColor: error ? COLORS.errorText : COLORS.borderGray,
-          backgroundColor: error ? `${COLORS.errorBg}33` : '#fff',
-        }}
-      >
-        {busy
-          ? <Loader2 className="w-3.5 h-3.5 flex-shrink-0 animate-spin" style={{ color: COLORS.primaryOrange }} />
-          : (file
-              ? <CheckCircle className="w-3.5 h-3.5 flex-shrink-0" style={{ color: COLORS.primaryGreen }} />
-              : <Camera className="w-3.5 h-3.5 flex-shrink-0" style={{ color: COLORS.grayText }} />)}
-        <span
-          className="flex-1 text-sm truncate text-left"
-          style={{ color: file ? COLORS.darkText : COLORS.grayText }}
+      {file ? (
+        // ── Has file: thumbnail preview ──
+        <div
+          className="relative rounded-lg overflow-hidden border"
+          style={{ borderColor: COLORS.primaryGreen, aspectRatio: '1.58' }}
+          data-testid={`${testId}-preview`}
         >
-          {file ? file.name : 'Choose file…'}
-        </span>
-      </button>
+          {previewUrl ? (
+            <img src={previewUrl} alt="ID document" className="w-full h-full object-cover" style={{ display: 'block' }} />
+          ) : (
+            <div className="w-full h-full flex items-center justify-center" style={{ backgroundColor: COLORS.sectionBg }}>
+              <FileText className="w-6 h-6" style={{ color: COLORS.grayText }} />
+            </div>
+          )}
+          <div className="absolute bottom-0 left-0 right-0 px-2 py-1"
+            style={{ background: 'linear-gradient(to top, rgba(0,0,0,0.7), transparent)' }}>
+            <span className="text-white text-[10px] font-semibold leading-tight">
+              {docLabel || file.name}
+            </span>
+          </div>
+          <button
+            type="button"
+            onClick={onRemove}
+            className="absolute top-1.5 right-1.5 w-5 h-5 rounded-full flex items-center justify-center transition-colors"
+            style={{ background: 'rgba(0,0,0,0.6)' }}
+            aria-label="Remove uploaded file"
+            data-testid={`${testId}-remove`}
+          >
+            <X className="w-2.5 h-2.5 text-white" />
+          </button>
+        </div>
+      ) : (
+        // ── No file: upload target ──
+        <button
+          type="button"
+          onClick={() => inputRef.current?.click()}
+          className="flex flex-col items-center justify-center gap-1 border rounded-lg w-full cursor-pointer hover:bg-gray-50 transition-colors"
+          style={{
+            borderColor: error ? COLORS.errorText : COLORS.borderGray,
+            backgroundColor: error ? `${COLORS.errorBg}33` : '#fff',
+            aspectRatio: '1.58',
+          }}
+          data-testid={testId}
+        >
+          {busy
+            ? <Loader2 className="w-4 h-4 animate-spin" style={{ color: COLORS.primaryOrange }} />
+            : <Camera className="w-4 h-4" style={{ color: COLORS.grayText }} />}
+          <span className="text-[10px] leading-tight text-center" style={{ color: COLORS.grayText }}>
+            {busy ? 'Processing…' : 'Tap to upload'}
+          </span>
+        </button>
+      )}
       <input
         ref={inputRef}
         type="file"
         accept={FILE_ACCEPT_ATTR}
         onChange={onChange}
         className="hidden"
-        data-testid={testId}
+        data-testid={`${testId}-input`}
       />
       {error && <div className="text-[10px] mt-0.5 leading-tight" style={{ color: COLORS.errorText }}>{error}</div>}
     </div>
@@ -258,6 +291,9 @@ const RoomCheckInModal = ({ room, availableRooms = [], onClose, onSuccess, sideb
   const flags = restaurant?.checkInFlags || {
     guestDetails: false, bookingDetails: false, showUserGst: false,
   };
+  // BUG-410: accommodation GST slab config — same source as CheckInPage (BUG-386)
+  const roomGstApplicable = restaurant?.checkInFlags?.roomGstApplicable ?? false;
+  const roomGstSlabs      = restaurant?.checkInFlags?.roomGstSlabs      ?? null;
 
   // ── State: baseline ──
   const [name, setName] = useState('');
@@ -308,6 +344,10 @@ const RoomCheckInModal = ({ room, availableRooms = [], onClose, onSuccess, sideb
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [dirtyDialog, setDirtyDialog] = useState(null); // null | 'close'
   const [errors, setErrors] = useState({}); // field-level errors {phone, email, advance, firmGst, checkin}
+  // CR-129: CRM document preview state
+  const [crmCustomerId, setCrmCustomerId] = useState(null);
+  const [crmDocuments, setCrmDocuments] = useState([]);
+  const [crmDocsLoading, setCrmDocsLoading] = useState(false);
   // M-02: clear a single inline error when the user edits that field
   const clearErr = (key) =>
     setErrors((prev) => (prev[key] == null ? prev : { ...prev, [key]: undefined }));
@@ -320,11 +360,25 @@ const RoomCheckInModal = ({ room, availableRooms = [], onClose, onSuccess, sideb
   const roomsCount = selectedRoomIds.length;
   const maxAdults = 4 * roomsCount;
   const maxChildren = 4 * roomsCount;
+  // BUG-422 E1: component-level gstTax — placed AFTER all useState hooks to avoid TDZ.
+  // computeRoomGst imported at L13 (BUG-410). roomPrice + nights are state vars above.
+  const gstTax = useMemo(() => {
+    const { gstTotal } = computeRoomGst(
+      roomGstApplicable,
+      roomGstSlabs,
+      Number(roomPrice) || 0,
+      nights,
+      1
+    );
+    return gstTotal;
+  }, [roomGstApplicable, roomGstSlabs, roomPrice, nights]);
+  // BUG-422 E2: include accommodation GST in balance_payment (same formula as new CheckInPage).
+  // Old formula was room_price - advance only (missing GST — now fixed).
   const balancePayment = useMemo(() => {
     const o = Number(roomPrice) || 0;
     const a = Number(advancePayment) || 0;
-    return (o - a).toFixed(2);
-  }, [roomPrice, advancePayment]);
+    return (o + gstTax - a).toFixed(2);
+  }, [roomPrice, advancePayment, gstTax]);
   // BUG-027: dynamic option list filtered to {cash, card, upi} per locked Q8.
   // Source: restaurant.paymentMethods (top-level on profile transform).
   const paymentMethodOptions = useMemo(() => {
@@ -425,15 +479,36 @@ const RoomCheckInModal = ({ room, availableRooms = [], onClose, onSuccess, sideb
     return () => window.removeEventListener('beforeunload', handler);
   }, [isDirty]);
 
+  // CR-129: fetch existing CRM documents when a returning guest is identified
+  useEffect(() => {
+    if (!crmCustomerId) {
+      setCrmDocuments([]);
+      setCrmDocsLoading(false);
+      return;
+    }
+    setCrmDocsLoading(true);
+    getDocuments(crmCustomerId)
+      .then(docs => setCrmDocuments(docs || []))
+      .catch(() => setCrmDocuments([]))
+      .finally(() => setCrmDocsLoading(false));
+  }, [crmCustomerId]);
+
   // ── Handlers ──
 
   // BUG-065: Select customer from CRM suggestions
   const selectCrmCustomer = useCallback((c) => {
     setName(c.name || '');
-    // PhoneInput with defaultCountry="IN" handles national format — no +91 prefix needed
+    // CR-129: plain 10-digit phone (PhoneInput removed)
     const rawPhone = (c.phone || '').replace(/\D/g, '');
-    setPhone(rawPhone.length === 10 ? rawPhone : c.phone || '');
+    setPhone(rawPhone.length === 10 ? rawPhone : rawPhone.slice(-10) || '');
     if (c.email) setEmail(c.email);
+    // CR-128 G4: Auto-populate B2B fields from CRM lookup (Q8=A)
+    if (c.isB2b) {
+      setBookingFor('Corporate');
+      if (c.gstName) setFirmName(c.gstName);
+      if (c.gstNumber) setFirmGst(c.gstNumber);
+    }
+    setCrmCustomerId(c.id || null); // CR-129: trigger document fetch
     setShowNameSuggestions(false);
     setShowPhoneSuggestions(false);
     setIsCustomerSelected(true);
@@ -446,13 +521,23 @@ const RoomCheckInModal = ({ room, availableRooms = [], onClose, onSuccess, sideb
     const val = e.target.value;
     setName(val);
     if (val.trim()) clearErr('name');
-    if (isCustomerSelected) setIsCustomerSelected(false);
+    if (isCustomerSelected) {
+      setIsCustomerSelected(false);
+      setCrmCustomerId(null); // CR-129: clear doc section
+      setCrmDocuments([]);
+    }
   }, [isCustomerSelected]);
 
-  const handlePhoneChange = useCallback((val) => {
-    setPhone(val || '');
-    if (val) clearErr('phone');
-    if (isCustomerSelected) setIsCustomerSelected(false);
+  // CR-129: plain numeric handler (PhoneInput removed — now a plain <input>)
+  const handlePhoneChange = useCallback((e) => {
+    const v = e.target.value.replace(/\D/g, '').slice(0, 10);
+    setPhone(v);
+    if (v) clearErr('phone');
+    if (isCustomerSelected) {
+      setIsCustomerSelected(false);
+      setCrmCustomerId(null); // CR-129: clear doc section
+      setCrmDocuments([]);
+    }
   }, [isCustomerSelected]);
 
   const requestClose = useCallback(() => {
@@ -533,15 +618,20 @@ const RoomCheckInModal = ({ room, availableRooms = [], onClose, onSuccess, sideb
   const validate = () => {
     const next = {};
     if (!name.trim()) next.name = 'Required';
-    if (!phone || !isValidPhoneNumber(phone)) next.phone = 'Enter a valid phone number';
+    // CR-129: plain 10-digit validation (PhoneInput/isValidPhoneNumber removed)
+    const phone10 = (phone || '').replace(/\D/g, '');
+    if (!phone || phone10.length !== 10) next.phone = 'Enter a valid 10-digit number';
     if (email.trim() && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) next.email = 'Invalid email';
     if (selectedRoomIds.length === 0) next.rooms = 'Select at least one room';
 
     if (flags.guestDetails) {
-      if (!frontImage) next.front = 'Front image required';
+      // CR-350: ID upload mandatory only when dashboard toggle is ON
+      // BUG-351: also skip when CRM already has verified docs on file
+      const idUploadRequired = localStorage.getItem('mygenie_room_id_upload_required') === 'true';
+      if (!frontImage && crmDocuments.length === 0 && idUploadRequired) next.front = 'Front image required';
       extraAdults.forEach((r, i) => {
         if (!r.name.trim()) next[`adult${i}_name`] = 'Name required';
-        if (!r.frontImage) next[`adult${i}_front`] = 'Front image required';
+        if (!r.frontImage && crmDocuments.length === 0 && idUploadRequired) next[`adult${i}_front`] = 'Front image required';
       });
       childNames.forEach((c, i) => {
         const t = (c || '').trim();
@@ -558,7 +648,7 @@ const RoomCheckInModal = ({ room, availableRooms = [], onClose, onSuccess, sideb
       const adv = Number(advancePayment) || 0;
       const ord = Number(roomPrice) || 0;
       if (adv < 0) next.advance = 'Cannot be negative';
-      else if (advancePayment !== '' && adv > ord) next.advance = 'Advance cannot be greater than Room Price';
+      // BUG-357: removed FE-only cap — backend accepts advance > room price (corporate pre-pay etc.)
 
       // BUG-027: payment method required when advance > 0
       if (adv > 0 && !paymentMethod) next.paymentMethod = 'Required when Advance > 0';
@@ -603,10 +693,30 @@ const RoomCheckInModal = ({ room, availableRooms = [], onClose, onSuccess, sideb
             );
             customerId = created?.customer_id || created?.id || null;
           }
+          // INV-003 RC2: set crmCustomerId so doc viewer triggers on manual entry too
+          if (customerId) setCrmCustomerId(customerId);
         } catch (crmErr) {
           console.warn('[RoomCheckIn] BUG-092: CRM lookup/create failed, proceeding without customer_id:', crmErr);
         }
       }
+
+      // CR-128 G3: Sync B2B fields to CRM on Corporate check-in (Q5=A: auto-silent)
+      if (customerId && bookingFor === 'Corporate' && firmGst.trim()) {
+        try {
+          await updateCustomer(customerId, {
+            phone: phone10,
+            gstName: firmName.trim(),
+            gstNumber: firmGst.trim(),
+            isB2b: true,
+          }, restaurant?.id);
+        } catch (crmB2bErr) {
+          console.warn('[RoomCheckIn] CR-128: CRM B2B sync failed, proceeding:', crmB2bErr);
+        }
+      }
+
+      // BUG-410: compute accommodation GST for ALL booking types (not just Corporate)
+      const stayNights = Math.max(1, Math.round((new Date(checkoutDate) - new Date(checkinDate)) / 86400000));
+      const { gstTotal: gstTax } = computeRoomGst(roomGstApplicable, roomGstSlabs, Number(roomPrice), stayNights, 1);
 
       await roomService.checkIn({
         name: name.trim(),
@@ -635,10 +745,20 @@ const RoomCheckInModal = ({ room, availableRooms = [], onClose, onSuccess, sideb
         balancePayment: balancePayment,
         paymentMethod: paymentMethod,  // BUG-027
         orderNote: orderNote.trim(),
+        gstTax, // BUG-410: accommodation GST computed for all booking types
 
         firmName: firmName.trim(),
         firmGst: firmGst.trim(),
       });
+
+      // INV-003 RC1: upload docs to CRM after check-in so they appear on next visit
+      // Non-blocking — modal closes before uploads complete; failures are silent
+      if (customerId && (frontImage || backImage)) {
+        const CRM_DOC_TYPE = { 'Aadhar card': 'aadhaar', 'Passport': 'passport', 'PAN card': 'pan_card', 'License': 'license', 'Voter ID': 'voter_id' };
+        const docType = CRM_DOC_TYPE[idType] || 'other';
+        if (frontImage) uploadDocument(customerId, docType, frontImage).catch(() => {});
+        if (backImage)  uploadDocument(customerId, docType, backImage).catch(() => {});
+      }
 
       const successMsg = 'Group check-in completed successfully';
       toast({ title: successMsg, description: `${selectedRoomIds.length} room(s) checked in` });
@@ -821,30 +941,33 @@ const RoomCheckInModal = ({ room, availableRooms = [], onClose, onSuccess, sideb
                     </div>
                   )}
                 </div>
-                {/* Phone with country-code selector + CRM search dropdown */}
+                {/* CR-129: Phone — fixed +91 prefix, plain 10-digit input (PhoneInput removed) */}
                 <div className="relative" ref={phoneWrapRef}>
                   <FieldLabel required>Phone</FieldLabel>
                   <div
-                    className="rcm-phone-wrap border rounded-lg px-2.5 py-1.5 flex items-center"
+                    className="flex items-center border rounded-lg overflow-hidden"
                     style={{
                       borderColor: errors.phone ? COLORS.errorText : COLORS.borderGray,
                       backgroundColor: '#fff',
                     }}
+                    data-testid="checkin-phone-wrap"
                   >
-                    <Phone className="w-3.5 h-3.5 mr-1.5 flex-shrink-0" style={{ color: COLORS.grayText }} />
-                    <PhoneInput
-                      data-testid="checkin-phone"
-                      defaultCountry="IN"
+                    <span
+                      className="px-2.5 py-[7px] text-sm font-semibold border-r flex-shrink-0"
+                      style={{ backgroundColor: COLORS.sectionBg, borderColor: COLORS.borderGray, color: COLORS.grayText }}
+                    >
+                      +91
+                    </span>
+                    <input
+                      type="tel"
+                      inputMode="numeric"
+                      maxLength={10}
+                      placeholder="98765 43210"
                       value={phone}
                       onChange={handlePhoneChange}
-                      className="flex-1 rcm-phone-input"
-                      countrySelectProps={{ 'data-testid': 'checkin-country-code' }}
-                      numberInputProps={{
-                        'data-testid': 'checkin-phone-input',
-                        className: 'outline-none text-sm bg-transparent min-w-0 w-full',
-                        style: { color: COLORS.darkText },
-                        placeholder: '98765 43210',
-                      }}
+                      className="flex-1 outline-none px-2.5 py-[7px] text-sm bg-transparent min-w-0"
+                      style={{ color: COLORS.darkText }}
+                      data-testid="checkin-phone-input"
                     />
                   </div>
                   {errors.phone && <div className="text-[10px] mt-0.5" style={{ color: COLORS.errorText }}>{errors.phone}</div>}
@@ -882,7 +1005,74 @@ const RoomCheckInModal = ({ room, availableRooms = [], onClose, onSuccess, sideb
                 />
               </div>
 
-              {flags.guestDetails ? (
+              {/* CR-129: CRM documents on file — only for returning guests */}
+              {crmCustomerId && (crmDocsLoading || crmDocuments.length > 0) && (
+                <div
+                  className="rounded-lg p-2.5 mb-2"
+                  style={{ background: '#F0FDF4', border: '1px solid #D1FAE5' }}
+                  data-testid="crm-documents-section"
+                >
+                  <div className="flex items-center justify-between mb-2">
+                    <div className="flex items-center gap-1.5">
+                      <ShieldCheck className="w-3.5 h-3.5" style={{ color: '#059669' }} />
+                      <span className="text-[11px] font-bold" style={{ color: '#065F46' }}>
+                        Documents on File
+                      </span>
+                      {!crmDocsLoading && (
+                        <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full text-white"
+                          style={{ background: '#22C55E' }}>
+                          {crmDocuments.length}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                  {crmDocsLoading ? (
+                    <div className="flex items-center gap-1.5" style={{ color: '#059669' }}>
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      <span className="text-[11px]">Loading documents…</span>
+                    </div>
+                  ) : (
+                    <>
+                      <div className="grid grid-cols-3 gap-1.5">
+                        {crmDocuments.slice(0, 3).map((doc) => (
+                          <a
+                            key={doc.id || doc.doc_type}
+                            href={doc.file_url || doc.url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="relative block rounded-md overflow-hidden"
+                            style={{ border: '1px solid #D1FAE5', aspectRatio: '1.58' }}
+                            data-testid={`crm-doc-thumb-${doc.doc_type}`}
+                          >
+                            <img
+                              src={doc.file_url || doc.url}
+                              alt={doc.doc_type}
+                              className="w-full h-full object-cover"
+                              onError={(e) => { e.currentTarget.style.display = 'none'; }}
+                            />
+                            <div className="absolute inset-0 flex flex-col justify-end p-1"
+                              style={{ background: 'linear-gradient(to top, rgba(0,0,0,0.72), transparent)' }}>
+                              <div className="text-white text-[9px] font-semibold capitalize mb-0.5">
+                                {(doc.doc_type || 'doc').replace('_', ' ')}
+                              </div>
+                              <span className="inline-flex items-center gap-0.5 text-[8px] font-bold
+                                px-1 py-0.5 rounded-full text-white" style={{ background: '#22C55E', width: 'fit-content' }}>
+                                <CheckCircle className="w-2 h-2" /> Verified
+                              </span>
+                            </div>
+                          </a>
+                        ))}
+                      </div>
+                      <div className="text-[10px] mt-1.5" style={{ color: '#059669' }}>
+                        Docs on file — no need to re-upload unless expired
+                      </div>
+                    </>
+                  )}
+                </div>
+              )}
+
+              {/* BUG-351: hide upload row entirely when CRM verified docs already on file */}
+              {flags.guestDetails && crmDocuments.length === 0 ? (
                 <div className="grid grid-cols-3 gap-2">
                   <SelectField
                     label="ID Type"
@@ -898,7 +1088,9 @@ const RoomCheckInModal = ({ room, availableRooms = [], onClose, onSuccess, sideb
                     busy={frontBusy}
                     error={frontError || errors.front}
                     onChange={(e) => handleImagePicked(setFrontImage, setFrontBusy, setFrontError, e, 'front')}
+                    onRemove={() => { setFrontImage(null); setFrontError(''); }}
                     testId="checkin-front-image"
+                    docLabel={`${idType} · Front`}
                   />
                   <FileField
                     label="ID Back"
@@ -906,13 +1098,19 @@ const RoomCheckInModal = ({ room, availableRooms = [], onClose, onSuccess, sideb
                     busy={backBusy}
                     error={backError}
                     onChange={(e) => handleImagePicked(setBackImage, setBackBusy, setBackError, e)}
+                    onRemove={() => { setBackImage(null); setBackError(''); }}
                     testId="checkin-back-image"
+                    docLabel={`${idType} · Back`}
                   />
                 </div>
               ) : (
-                <div className="text-[11px]" style={{ color: COLORS.grayText }}>
-                  Verification not required for this restaurant configuration.
-                </div>
+                // Show "not required" only when guestDetails flag is off.
+                // When crmDocuments exist, the green docs box above already communicates status — no extra message needed.
+                !flags.guestDetails && (
+                  <div className="text-[11px]" style={{ color: COLORS.grayText }}>
+                    Verification not required for this restaurant configuration.
+                  </div>
+                )
               )}
             </div>
 
@@ -971,7 +1169,9 @@ const RoomCheckInModal = ({ room, availableRooms = [], onClose, onSuccess, sideb
                             busy={row.frontBusy}
                             error={row.frontErr || errors[`adult${i}_front`]}
                             onChange={(e) => handleAdultFile(i, 'frontImage', e)}
+                            onRemove={() => setExtraAdults((rows) => rows.map((r, j) => j === i ? { ...r, frontImage: null, frontErr: '' } : r))}
                             testId={`checkin-adult-${i + 2}-front`}
+                            docLabel={`${row.idType} · Front`}
                           />
                           <FileField
                             label="ID Back"
@@ -979,7 +1179,9 @@ const RoomCheckInModal = ({ room, availableRooms = [], onClose, onSuccess, sideb
                             busy={row.backBusy}
                             error={row.backErr}
                             onChange={(e) => handleAdultFile(i, 'backImage', e)}
+                            onRemove={() => setExtraAdults((rows) => rows.map((r, j) => j === i ? { ...r, backImage: null, backErr: '' } : r))}
                             testId={`checkin-adult-${i + 2}-back`}
+                            docLabel={`${row.idType} · Back`}
                           />
                           <div />
                         </div>
@@ -1236,6 +1438,40 @@ const RoomCheckInModal = ({ room, availableRooms = [], onClose, onSuccess, sideb
                   <div />
                 </div>
 
+                {/* BUG-410: GST accommodation strip — all booking types, not just Corporate */}
+                {Number(roomPrice) > 0 && (() => {
+                  const stayN = Math.max(1, Math.round((new Date(checkoutDate) - new Date(checkinDate)) / 86400000));
+                  const { gstTotal, cgst, sgst } = computeRoomGst(roomGstApplicable, roomGstSlabs, Number(roomPrice), stayN, 1);
+                  const rate = roomGstSlabs?.slabs?.find(s => (Number(roomPrice) / stayN) >= (s.min ?? 0) && (s.max == null || (Number(roomPrice) / stayN) <= s.max))?.gst_percent ?? 0;
+                  const hasGst = roomGstApplicable && roomGstSlabs && gstTotal > 0;
+                  if (!roomGstApplicable) return null;
+                  const fmt = (n) => Number(n).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+                  return (
+                    <div
+                      data-testid="modal-gst-strip"
+                      className={`rounded-lg border px-3 py-2.5 text-[12px] ${hasGst ? 'bg-[#F0FDF4] border-[#A7F3D0]' : 'bg-[#FAFAFA] border-[#E5E5E5]'}`}
+                    >
+                      <div className="flex items-center justify-between mb-1">
+                        <span className={`font-semibold text-[11px] uppercase tracking-wide ${hasGst ? 'text-[#166534]' : 'text-[#888]'}`}>GST (Accommodation)</span>
+                        {hasGst
+                          ? <span className="text-[10px] font-bold bg-[#22C55E] text-white px-2 py-0.5 rounded-full">{rate}% Slab</span>
+                          : <span className="text-[10px] font-semibold bg-[#E5E5E5] text-[#888] px-2 py-0.5 rounded-full">Not Applicable</span>
+                        }
+                      </div>
+                      {hasGst && (
+                        <>
+                          <div className="flex justify-between text-[#374151]"><span>CGST ({rate/2}%)</span><span>₹{fmt(cgst)}</span></div>
+                          <div className="flex justify-between text-[#374151] mt-0.5"><span>SGST ({rate/2}%)</span><span>₹{fmt(sgst)}</span></div>
+                          <div className="flex justify-between font-bold text-[#1A1A1A] border-t border-[#A7F3D0] pt-1.5 mt-1.5">
+                            <span>Total incl. GST</span>
+                            <span className="text-[#15803D]">₹{fmt(Number(roomPrice) + gstTotal)}</span>
+                          </div>
+                        </>
+                      )}
+                    </div>
+                  );
+                })()}
+
                 <InputField
                   icon={FileText}
                   label="Special Request"
@@ -1364,14 +1600,7 @@ const RoomCheckInModal = ({ room, availableRooms = [], onClose, onSuccess, sideb
         </div>
       )}
 
-      {/* Inline PhoneInput cosmetic fixes so it blends with our InputField style */}
-      <style>{`
-        .rcm-phone-wrap .PhoneInput { flex: 1; display: flex; align-items: center; gap: 6px; min-width: 0; }
-        .rcm-phone-wrap .PhoneInputCountry { display: flex; align-items: center; gap: 4px; }
-        .rcm-phone-wrap .PhoneInputInput { flex: 1; outline: none; border: none; background: transparent; font-size: 14px; color: ${COLORS.darkText}; min-width: 0; }
-        .rcm-phone-wrap .PhoneInputCountrySelect { font-size: 14px; color: ${COLORS.darkText}; background: transparent; border: none; outline: none; }
-      `}</style>
-    </div>
+      </div>
   );
 };
 

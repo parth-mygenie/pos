@@ -2,13 +2,16 @@ import { useState, useRef, useEffect } from "react";
 import { X, Minus, Plus } from "lucide-react";
 import { COLORS } from "../../constants";
 
-const AddCustomItemModal = ({ categories = [], products = [], onClose, onAdd }) => {
+const AddCustomItemModal = ({ categories = [], products = [], onClose, onAdd, showGst = false }) => { // CR-348: showGst prop
   const [name, setName] = useState('');
   const [categoryId, setCategoryId] = useState('');
   const [categorySearch, setCategorySearch] = useState('');
   const [price, setPrice] = useState('');
   const [qty, setQty] = useState(1);
   const [notes, setNotes] = useState('');
+  // CR-348: GST fields — shown only when restaurant has GST enabled (via showGst prop)
+  const [taxPercent, setTaxPercent] = useState('');
+  const [taxCalc, setTaxCalc] = useState('Exclusive');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState(null);
 
@@ -72,10 +75,10 @@ const AddCustomItemModal = ({ categories = [], products = [], onClose, onAdd }) 
     setSubmitting(true);
     setError(null);
     try {
-      await onAdd({ name: name.trim(), categoryId: parseInt(categoryId), price: parseFloat(price), qty, notes });
+      await onAdd({ name: name.trim(), categoryId: parseInt(categoryId), price: parseFloat(price), qty, notes, taxPercent: parseFloat(taxPercent) || 0, taxCalc }); // CR-348
       onClose();
     } catch (err) {
-      setError(err.readableMessage || err?.message || 'Failed to add item. Please try again.');
+      setError(`"${name.trim()}": ${err.readableMessage || err?.message || 'Failed to add item.'}`); // BUG-147: prefix item name
     } finally {
       setSubmitting(false);
     }
@@ -223,6 +226,44 @@ const AddCustomItemModal = ({ categories = [], products = [], onClose, onAdd }) 
               data-testid="custom-item-price-input"
             />
           </div>
+
+          {/* CR-348: GST fields — shown when restaurant has GST enabled */}
+          {showGst && (
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="text-sm font-medium mb-2 block" style={{ color: COLORS.grayText }}>
+                  GST %
+                </label>
+                <input
+                  type="number"
+                  placeholder="e.g. 5"
+                  value={taxPercent}
+                  onChange={(e) => setTaxPercent(e.target.value)}
+                  min="0"
+                  max="100"
+                  step="0.01"
+                  className="w-full px-4 py-3 rounded-xl border text-sm focus:outline-none focus:ring-2"
+                  style={{ borderColor: COLORS.borderGray, color: COLORS.darkText }}
+                  data-testid="custom-item-tax-percent"
+                />
+              </div>
+              <div>
+                <label className="text-sm font-medium mb-2 block" style={{ color: COLORS.grayText }}>
+                  Tax Calc
+                </label>
+                <select
+                  value={taxCalc}
+                  onChange={(e) => setTaxCalc(e.target.value)}
+                  className="w-full px-4 py-3 rounded-xl border text-sm focus:outline-none focus:ring-2 bg-white"
+                  style={{ borderColor: COLORS.borderGray, color: COLORS.darkText }}
+                  data-testid="custom-item-tax-calc"
+                >
+                  <option value="Exclusive">Exclusive</option>
+                  <option value="Inclusive">Inclusive</option>
+                </select>
+              </div>
+            </div>
+          )}
 
           {/* Quantity */}
           <div>

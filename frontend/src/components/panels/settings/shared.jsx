@@ -1,7 +1,8 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Check, XCircle, Pencil, Trash2, X } from "lucide-react";
 import { COLORS } from "../../../constants";
 import { useToast } from "../../../hooks/use-toast";
+// CR-133-GAP: G1 fix — NumberInput allow-empty onChange + blur clamp
 
 // ─── Form Inputs ────────────────────────────────────────────────────────────
 export const TextInput = ({ label, value, onChange, placeholder, required }) => (
@@ -21,27 +22,43 @@ export const TextInput = ({ label, value, onChange, placeholder, required }) => 
   </div>
 );
 
-export const NumberInput = ({ label, value, onChange, min, max, step, suffix }) => (
-  <div className="py-2">
-    <label className="block text-xs font-medium mb-1" style={{ color: COLORS.grayText }}>
-      {label}
-    </label>
-    <div className="flex items-center gap-2">
-      <input
-        type="number"
-        value={value ?? ""}
-        onChange={(e) => onChange(parseFloat(e.target.value) || 0)}
-        min={min}
-        max={max}
-        step={step || 1}
-        className="w-full px-3 py-2 text-sm rounded-lg border outline-none focus:ring-2"
-        style={{ borderColor: COLORS.borderGray, color: COLORS.darkText }}
-        data-testid={`input-${label.toLowerCase().replace(/\s+/g, '-')}`}
-      />
-      {suffix && <span className="text-sm" style={{ color: COLORS.grayText }}>{suffix}</span>}
+export const NumberInput = ({ label, value, onChange, min, max, step, suffix }) => {
+  // BUG-315: local display state — allows clearing to retype without snap-back
+  const [localVal, setLocalVal] = useState(value != null ? String(value) : '');
+  useEffect(() => { setLocalVal(value != null ? String(value) : ''); }, [value]);
+  return (
+    <div className="py-2">
+      <label className="block text-xs font-medium mb-1" style={{ color: COLORS.grayText }}>
+        {label}
+      </label>
+      <div className="flex items-center gap-2">
+        <input
+          type="number"
+          value={localVal}
+          onChange={(e) => {
+            setLocalVal(e.target.value);
+            const n = parseFloat(e.target.value);
+            if (Number.isFinite(n)) onChange(n);
+          }}
+          onBlur={() => {
+            const n = parseFloat(localVal);
+            const minV = min ?? 0;
+            if (!Number.isFinite(n) || n < minV) { onChange(minV); setLocalVal(String(minV)); return; }
+            if (max != null && n > max) { onChange(max); setLocalVal(String(max)); return; }
+            onChange(n);
+          }}
+          min={min}
+          max={max}
+          step={step || 1}
+          className="w-full px-3 py-2 text-sm rounded-lg border outline-none focus:ring-2"
+          style={{ borderColor: COLORS.borderGray, color: COLORS.darkText }}
+          data-testid={`input-${label.toLowerCase().replace(/\s+/g, '-')}`}
+        />
+        {suffix && <span className="text-sm" style={{ color: COLORS.grayText }}>{suffix}</span>}
+      </div>
     </div>
-  </div>
-);
+  );
+};
 
 export const TimeInput = ({ label, value, onChange }) => (
   <div className="py-2">
@@ -77,7 +94,7 @@ export const SelectInput = ({ label, value, onChange, options }) => (
   </div>
 );
 
-export const ToggleSwitch = ({ label, checked, onChange, disabled }) => (
+export const ToggleSwitch = ({ label, checked, onChange, disabled, testId }) => (
   <div className="flex items-center justify-between py-3 border-b" style={{ borderColor: COLORS.borderGray }}>
     <span className="text-sm" style={{ color: COLORS.darkText }}>{label}</span>
     <button
@@ -85,7 +102,7 @@ export const ToggleSwitch = ({ label, checked, onChange, disabled }) => (
       className="relative w-11 h-6 rounded-full transition-colors"
       style={{ backgroundColor: checked ? COLORS.primaryGreen : COLORS.borderGray }}
       disabled={disabled}
-      data-testid={`toggle-${label.toLowerCase().replace(/\s+/g, '-')}`}
+      data-testid={testId || (label ? `toggle-${label.toLowerCase().replace(/\s+/g, '-')}` : undefined)}
     >
       <span
         className="absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white transition-transform shadow"

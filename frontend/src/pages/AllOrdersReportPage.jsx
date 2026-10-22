@@ -15,7 +15,9 @@ import { calculateSummary } from "../api/transforms/reportTransform";
 import { fromAPI as orderFromAPI } from "../api/transforms/orderTransform";
 import api from "../api/axios";
 import { API_ENDPOINTS } from "../api/constants";
-import { useRestaurant } from "../contexts";
+import { useRestaurant, useSettings } from "../contexts"; // BUG-348: +useSettings for cancellation reasons
+import { cancelAndRefund } from '../api/services/razorpayRefundService'; // BUG-348
+import CancelOrderModal from '../components/order-entry/CancelOrderModal'; // BUG-348
 import { useAuth } from "../contexts/AuthContext";
 import { useToast } from "../hooks/use-toast";
 import { getBusinessDayRange, isWithinBusinessDay, isMutationAllowedForSelectedDate } from "../utils/businessDay";
@@ -82,7 +84,8 @@ const TAB_FILTERS = {
     // Include paid orders (f_order_status = 6)
     return o.fOrderStatus === 6;
   },
-  cancelled: (o) => o.paymentMethod === 'Cancel' || o.paymentMethod?.toLowerCase() === 'cancelled',
+  // CR-165 FIX: also catch fOrderStatus===3 — Razorpay-cancelled orders keep paymentMethod='razorpay'
+  cancelled: (o) => o.paymentMethod === 'Cancel' || o.paymentMethod?.toLowerCase() === 'cancelled' || o.fOrderStatus === 3,
   credit: (o) => o.paymentMethod === 'TAB',
   // CR-001 CS-1 + POS2-005: Hold matches paylater payment method OR
   // fOrderStatus === 9 OR fOrderStatus === 8 (POS2-005 reroute — status-8
@@ -129,7 +132,10 @@ const AllOrdersReportPage = () => {
   const { hasPermission, permissions, user } = useAuth();
   const { toast } = useToast();
   const schedules = useMemo(() => restaurant?.schedules || [], [restaurant?.schedules]);
-  const [isSidebarExpanded, setIsSidebarExpanded] = useState(false);
+  // BUG-361: persist sidebar state across reloads
+  const [isSidebarExpanded, setIsSidebarExpanded] = useState(
+    () => localStorage.getItem('mygenie_sidebar_expanded') === 'true'
+  );
   const [isSilentMode, setIsSilentMode] = useState(false);
 
   // CR-003 diagnostic — once-per-mount log of the logged-in user's
@@ -177,6 +183,8 @@ const AllOrdersReportPage = () => {
     channel: null,
     platform: null,
     paymentGateway: null,
+    punchedBy: null,     // CR-101: filter by who placed the order
+    collectedBy: null,   // CR-101: filter by who collected payment
   });
 
   // CR-001 Q-F: Platform filter is hidden entirely if backend `order_from` is
@@ -406,10 +414,20 @@ const AllOrdersReportPage = () => {
     let result = allOrders.filter(TAB_FILTERS[activeTab] || (() => true));
     
     // Apply payment method filter
+    // BUG-272: Match paymentMethod OR partial orders with matching leg
     if (filters.paymentMethod) {
-      result = result.filter(o => 
-        o.paymentMethod?.toLowerCase() === filters.paymentMethod.toLowerCase()
-      );
+      const fm = filters.paymentMethod.toLowerCase();
+      result = result.filter(o => {
+        const pm = (o.paymentMethod || '').toLowerCase();
+        if (fm === 'partial') return pm === 'partial';
+        if (pm === fm) return true;
+        if (pm === 'partial') {
+          if (fm === 'cash' && o.cashAmount > 0) return true;
+          if (fm === 'card' && o.cardAmount > 0) return true;
+          if (fm === 'upi' && o.upiAmount > 0) return true;
+        }
+        return false;
+      });
     }
     
     // Apply status filter
@@ -454,6 +472,14 @@ const AllOrdersReportPage = () => {
       result = result.filter(o => o.isPaymentGateway !== true);
     }
 
+    // CR-101: Employee filters
+    if (filters.punchedBy) {
+      result = result.filter(o => o.punchedBy === filters.punchedBy);
+    }
+    if (filters.collectedBy) {
+      result = result.filter(o => o.actionedBy === filters.collectedBy);
+    }
+
     setFilteredOrders(result);
     
     // Calculate summary
@@ -485,6 +511,16 @@ const AllOrdersReportPage = () => {
       setStatusBreakdown(null);
     }
   }, [allOrders, activeTab, filters, runningCount, missingCount, missingOrdersList]);
+
+  // CR-101: Derive unique employee names for filter dropdowns
+  const punchedByOptions = useMemo(() => {
+    const names = [...new Set(allOrders.map(o => o.punchedBy).filter(Boolean).filter(n => n !== '—'))];
+    return names.sort().map(n => ({ label: n, value: n }));
+  }, [allOrders]);
+  const collectedByOptions = useMemo(() => {
+    const names = [...new Set(allOrders.map(o => o.actionedBy).filter(Boolean).filter(n => n !== '—'))];
+    return names.sort().map(n => ({ label: n, value: n }));
+  }, [allOrders]);
 
   // Fetch orders when date changes
   useEffect(() => {
@@ -791,14 +827,15 @@ const AllOrdersReportPage = () => {
       // Mirror the unwrap logic used in CollectBillPanelDrawer — the
       // endpoint nests the order list under different keys depending on
       // the upstream consumer.
+      // BUG-368: empty array [] is truthy in JS — must guard length explicitly before using orders[0]
+      const ordersArr = response?.data?.orders;
       const raw =
-        response?.data?.orders?.order_details_order ||
+        (ordersArr && !Array.isArray(ordersArr) ? ordersArr?.order_details_order : null) ||
         response?.data?.order_details_order ||
-        (Array.isArray(response?.data?.orders) ? response.data.orders[0] : null) ||
-        response?.data?.orders ||
-        response?.data ||
-        null;
-      if (!raw) {
+        (Array.isArray(ordersArr) && ordersArr.length > 0 ? ordersArr[0] : null) ||
+        (ordersArr && !Array.isArray(ordersArr) ? ordersArr : null) ||
+        response?.data || null;
+      if (!raw || Array.isArray(raw)) {
         toast({
           title: 'Cannot print bill',
           description: 'Order details unavailable',
@@ -807,7 +844,7 @@ const AllOrdersReportPage = () => {
         return;
       }
       const order = orderFromAPI.order(raw);
-      if (!order || !order.rawOrderDetails) {
+      if (!order || !order.rawOrderDetails?.length) {
         toast({
           title: 'Cannot print bill',
           description: 'Order details unavailable',
@@ -832,6 +869,21 @@ const AllOrdersReportPage = () => {
     }
   }, [printerAgents, toast]);
 
+  // BUG-348: Razorpay refund from Paid tab
+  const { getOrderCancellationReasons } = useSettings();
+  const [refundOrder, setRefundOrder] = useState(null);
+  const handleRefundConfirm = useCallback(async (reason, note) => {
+    if (!refundOrder) return;
+    try {
+      await cancelAndRefund(refundOrder.id, reason?.reasonText || String(reason), note);
+      toast({ title: 'Refund Initiated', description: 'Razorpay refund has been initiated.' });
+    } catch (err) {
+      toast({ title: 'Refund Failed', description: err?.readableMessage || 'Contact support.', variant: 'destructive' });
+    } finally {
+      setRefundOrder(null);
+    }
+  }, [refundOrder, toast]);
+
   const actionsConfig = (activeTab === 'paid' || activeTab === 'hold')
     ? {
         isWithinMutationWindow,
@@ -846,6 +898,7 @@ const AllOrdersReportPage = () => {
         // a "Print" row action. NO permission gate (owner directive).
         // Hold-tab eligibility branch ignores it.
         onPrintBill: handlePrintBillFromAudit,
+        onRefund: setRefundOrder, // BUG-348: Razorpay refund
         // BUG-042-A (Feb-2026): Hold-tab Collect Bill must surface only
         // primary methods (Cash / Card / UPI). When none of those is
         // configured for the restaurant, the row-level Collect Bill button
@@ -886,7 +939,7 @@ const AllOrdersReportPage = () => {
       {/* Sidebar */}
       <Sidebar
         isExpanded={isSidebarExpanded}
-        setIsExpanded={setIsSidebarExpanded}
+        setIsExpanded={(v) => { setIsSidebarExpanded(v); localStorage.setItem('mygenie_sidebar_expanded', String(v)); }}
         isSilentMode={isSilentMode}
         setIsSilentMode={setIsSilentMode}
         onOpenSettings={() => {}}
@@ -1012,6 +1065,8 @@ const AllOrdersReportPage = () => {
               tabSettled={null}
               activeTab={activeTab}
               hasPlatformData={hasPlatformData}
+              punchedByOptions={punchedByOptions}
+              collectedByOptions={collectedByOptions}
             />
           </div>
 
@@ -1044,6 +1099,18 @@ const AllOrdersReportPage = () => {
         order={selectedOrder}
         tabId={activeTab}
       />
+
+      {/* BUG-348 / CR-165: Razorpay refund modal */}
+      {refundOrder && (
+        <CancelOrderModal
+          table={{ label: `Order #${refundOrder.orderNumber || refundOrder.id}` }}
+          itemCount={1}
+          reasons={getOrderCancellationReasons()}
+          onClose={() => setRefundOrder(null)}
+          onCancel={handleRefundConfirm}
+          mode="refund"
+        />
+      )}
 
       {/* CR-003 Phase 3.5 — Mark as Unpaid confirmation */}
       <MarkUnpaidConfirmDialog

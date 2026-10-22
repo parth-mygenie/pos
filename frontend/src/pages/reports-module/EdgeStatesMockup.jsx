@@ -43,7 +43,10 @@ const formatCurrency = (val) => {
 
 const EdgeStatesMockup = () => {
   const navigate = useNavigate();
-  const [isSidebarExpanded, setIsSidebarExpanded] = useState(false);
+  // BUG-361: persist sidebar state across reloads
+  const [isSidebarExpanded, setIsSidebarExpanded] = useState(
+    () => localStorage.getItem('mygenie_sidebar_expanded') === 'true'
+  );
   const [isSilentMode, setIsSilentMode] = useState(false);
   const [activeState, setActiveState] = useState('first-load');
 
@@ -54,7 +57,7 @@ const EdgeStatesMockup = () => {
       {/* Sidebar — always renders (page chrome) */}
       <Sidebar
         isExpanded={isSidebarExpanded}
-        setIsExpanded={setIsSidebarExpanded}
+        setIsExpanded={(v) => { setIsSidebarExpanded(v); localStorage.setItem('mygenie_sidebar_expanded', String(v)); }}
         isSilentMode={isSilentMode}
         setIsSilentMode={setIsSilentMode}
         onOpenSettings={() => {}}
@@ -69,7 +72,7 @@ const EdgeStatesMockup = () => {
       <main className="flex-1 flex flex-col overflow-hidden bg-zinc-50 relative">
 
         {/* Header — always renders (page chrome) */}
-        <header className="flex items-center justify-between px-8 py-5 bg-white border-b border-zinc-200" data-testid="reports-module-header">
+        <header className="flex items-center justify-between px-8 py-5 bg-white border-b border-zinc-200 flex-wrap gap-y-3" data-testid="reports-module-header"> {/* BUG-555 */}
           <div className="flex items-center gap-4">
             <button
               className="p-2 hover:bg-zinc-100 rounded-lg transition-colors"
@@ -91,7 +94,7 @@ const EdgeStatesMockup = () => {
             </div>
           </div>
 
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-3 flex-wrap">
             {/* Date Picker — disabled during load states */}
             <div className={`flex items-center gap-2 px-3 py-2 border border-zinc-200 bg-white rounded-lg ${isDisabled ? 'opacity-50 pointer-events-none' : ''}`}>
               <CalendarIcon className="w-4 h-4 text-zinc-500" />

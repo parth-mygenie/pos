@@ -13,6 +13,7 @@ import {
 import { fromAPI as orderFromAPI } from '../transforms/orderTransform';
 import { fromAPI as productFromAPI } from '../transforms/productTransform';
 import { fetchSingleOrderForSocket } from '../services/orderService';
+import { toast } from '../../hooks/use-toast';
 
 // BUG-089 (POS3.0): Dedup map — tracks orderIds recently processed by
 // handleOrderDataEvent (v2 payload events). When handleUpdateFoodStatus
@@ -902,5 +903,101 @@ export const handleFoodUpdate = (args, actions) => {
     }
   } else {
     log('WARN', `food-update: unhandled type='${type}' food_id=${food_id}`);
+  }
+};
+
+
+// =============================================================================
+// CR-106: AGGREGATOR ORDER HANDLERS (Swiggy/Zomato via UrbanPiper)
+// =============================================================================
+
+/**
+ * Handle new aggregator order from socket
+ * Socket: aggregator_order_${rid} → 'aggrigator-order' → [event, orderId, rid, ?, payload?]
+ * Owner confirmed: full payload comes via socket, no separate API fetch needed
+ */
+export const handleAggregatorNewOrder = (message, actions, aggregatorTransform) => {
+  const orderId = message[1];
+  const payload = message[4] || message[3]; // payload position may vary
+
+  if (payload && typeof payload === 'object' && payload.order_details_order) {
+    // Full payload in socket — transform directly
+    const order = aggregatorTransform.fromAPI.aggregatorOrder(payload);
+    actions.addOrder(order);
+    log('INFO', `Aggregator order added from socket payload: ${order.orderId}`);
+  } else {
+    // Fallback: fetch via API (shouldn't happen per owner, but defensive)
+    log('WARN', `Aggregator socket missing payload for orderId=${orderId}, fetching via API`);
+    import('../services/aggregatorService').then(({ getAggregatorOrderList }) => {
+      getAggregatorOrderList().then(data => {
+        const orders = aggregatorTransform.fromAPI.aggregatorOrderList(data);
+        const found = orders.find(o => o.orderId === Number(orderId));
+        if (found) actions.addOrder(found);
+      }).catch(err => log('ERROR', 'Aggregator API fallback failed', err));
+    });
+  }
+};
+
+/**
+ * Handle aggregator order status update from socket
+ * Socket: aggregator_order_${rid} → 'aggrigator-order-update' → [event, orderId, rid, status]
+ */
+export const handleAggregatorOrderUpdate = (message, actions, aggregatorTransform) => {
+  log('INFO', 'Aggregator order update event', message);
+  const orderId = Number(message[1]);
+  const payload = message[4] || message[3];
+
+  if (payload && typeof payload === 'object' && payload.order_details_order) {
+    const order = aggregatorTransform.fromAPI.aggregatorOrder(payload);
+    // BUG-250: Remove on terminal statuses (OD-W2-7: completed=6, OD-W2-8: cancelled=3)
+    const isTerminal = order.fOrderStatus === 6 || order.fOrderStatus === 3;
+    if (isTerminal) {
+      // BUG-D fix: if order was previously unconfirmed (fos=0/7) and is now auto-rejected (fos=3),
+      // staff had no chance to act — fire a visible warning so they can follow up with the customer.
+      if (order.fOrderStatus === 3) {
+        const existing = actions.getOrderById?.(order.orderId);
+        const wasUnconfirmed = existing && (existing.fOrderStatus === 0 || existing.fOrderStatus === 7);
+        if (wasUnconfirmed) {
+          const platform = order.platform || order.source || 'Aggregator';
+          const aggrId = order.aggrId || order.orderId;
+          toast({
+            title: `${platform} order auto-rejected`,
+            description: `Order #${aggrId} was not accepted in time and has been auto-rejected. Please check with the customer.`,
+            variant: 'destructive',
+            duration: 10000,
+          });
+          log('WARN', `Aggregator order auto-rejected (was unconfirmed): ${order.orderId}, aggrId=${aggrId}`);
+        }
+      }
+      actions.removeOrder(order.orderId);
+      log('INFO', `Aggregator order removed (terminal): ${order.orderId}, status=${order.fOrderStatus}`);
+    } else {
+      actions.updateOrder(order.orderId, order);
+      log('INFO', `Aggregator order updated from socket: ${order.orderId}, status=${order.fOrderStatus}`);
+    }
+  } else {
+    // Fallback: re-fetch order list and find this order
+    log('WARN', `Aggregator update missing payload for orderId=${orderId}, fetching via API`);
+    import('../services/aggregatorService').then(({ getAggregatorOrderList }) => {
+      getAggregatorOrderList().then(data => {
+        const orders = aggregatorTransform.fromAPI.aggregatorOrderList(data);
+        const found = orders.find(o => o.orderId === orderId);
+        if (found) {
+          // BUG-Issue2B-fix: check terminal status in fallback path — was always calling
+          // updateOrder regardless of fOrderStatus, so cancelled/completed orders never left the board
+          const isTerminal = found.fOrderStatus === 6 || found.fOrderStatus === 3;
+          if (isTerminal) {
+            actions.removeOrder(found.orderId);
+            log('INFO', `Aggregator fallback: removed terminal order ${found.orderId}, status=${found.fOrderStatus}`);
+          } else {
+            actions.updateOrder(found.orderId, found);
+          }
+        } else {
+          // Order absent from active list = already removed by backend = treat as terminal
+          actions.removeOrder(orderId);
+          log('INFO', `Aggregator fallback: order ${orderId} not in active list, removing from board`);
+        }
+      }).catch(err => log('ERROR', 'Aggregator update API fallback failed', err));
+    });
   }
 };

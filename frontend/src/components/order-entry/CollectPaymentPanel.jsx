@@ -1,19 +1,21 @@
-import { useState, useMemo, useEffect, useRef } from "react";
+import { useState, useMemo, useEffect, useCallback, useRef } from "react";
 import { ChevronLeft, CreditCard, Smartphone, Banknote, Split, FileText, Check, ArrowRightLeft, ChevronDown, ChevronUp, BellRing, RefreshCw, MoreHorizontal, Printer, Scissors } from "lucide-react";
 import { COLORS } from "../../constants";
 import { useRestaurant, useTables, useSettings, useMenu } from "../../contexts";
 import { PAYMENT_METHODS, filterLayoutByApiTypes, getDynamicPaymentTypes, DEFAULT_PAYMENT_LAYOUT } from "../../config/paymentMethods";
 import * as tableService from "../../api/services/tableService";
+import { applyOrderDiscount } from "../../api/services/orderService"; // BUG-538
 // BUG-038 (May-2026): CRM typeahead helper for the Credit/TAB customer
 // block. Mirrors CartPanel.jsx usage. Mobile remains the unique key —
 // no `customer_id` propagation, no payload-shape change.
-import { searchCustomers } from "../../api/services/customerService";
+import { searchCustomers, lookupCustomer, createCustomer } from "../../api/services/customerService"; // BUG-183
 import PaymentMethodButton, { PaymentMethodButtonInline } from "./PaymentMethodButton";
 // BUG-108 P1 (May-2026): Feature flags for Coupon/Loyalty/Wallet CRM integration.
 // All flags default `false` — sections render disabled with helper text;
 // `orderTransform.js` force-zeros corresponding payload fields. See
 // `POS3_0_BUG_108_P1_BUG_099_HOTSPOT_CHECK_AND_CR_PLAYBOOK_HANDOFF_2026_05_22.md`.
 import { BUG108_FLAGS, BUG108_COPY } from "../../utils/BUG108_FLAGS";
+import { applyGrandTotalRoundOff } from "../../utils/roundOffUtils"; // CR-170
 // BUG-108 Phase C corrected (2026-05-24): non-mutating CRM calculation.
 import { getMaxRedeemable } from "../../api/services/loyaltyService";
 // BUG-108 V1B (2026-05-25): coupon CRM wiring — type-ahead /available +
@@ -30,6 +32,8 @@ const CollectPaymentPanel = ({
   onPrintBill,
   onOpenSplitBill, // BUG-004: null when not eligible; called with live finalTotal on click
   onToggleComplimentary, // BUG-018 Part 2: (itemId) => toggle runtime-complimentary flag
+  onSetCompReason, // CR-104: (itemId, reason) => void — optional inline reason, runtime-comp only
+  onSetCompItem, // BUG-298 / BUG-299: open MarkCompModal for partial-qty comp
   initialDeliveryCharge = 0, // BUG-019: seeded delivery charge from backend (scan/re-engage). Lock rule moved to isPrepaid below.
   customer: passedCustomer, 
   isRoom, 
@@ -70,16 +74,27 @@ const CollectPaymentPanel = ({
   // method passed in `allowedMethods` only renders if it is ALSO configured
   // by the restaurant. When undefined (dashboard caller) → existing
   // behaviour is preserved verbatim.
+  // CR-413: initialCoupon removed — cashier always chooses coupon (OD-INV-01=A)
   allowedMethods,
+  // CR-412: pre-ticked loyalty from scan & order. Null for regular POS orders → no-op.
+  initialLoyalty = null,
+  // BUG-538: role-base discount gate + pre-seed. Safe defaults preserve 100% backward compat.
+  canDiscount = true,      // true = no gate when roleBaseDiscount=false (default for all restaurants)
+  orderId = null,          // placed order DB id for Apply API call; null = no Apply button shown
+  initialDiscount = null,  // pre-seed from order_discount_json on mount; null = no-op
 }) => {
   const customer = passedCustomer;
   const { discountTypes, paymentMethods: restaurantPaymentMethods, paymentTypes: restaurantPaymentTypes, restaurant, settings: restaurantSettings } = useRestaurant();
+  // BUG-538: gate — when roleBaseDiscount=false (default), discountAllowed=true → zero behavior change
+  const discountAllowed = !restaurantSettings?.roleBaseDiscount || canDiscount;
+  const showApplyButton = !!restaurantSettings?.roleBaseDiscount && canDiscount && !!orderId;
   const { tables } = useTables();
   const { paymentLayoutConfig } = useSettings();
   const { getCategoryById } = useMenu();
 
   // Service charge from restaurant profile
   const serviceChargePercentage = (restaurant?.features?.serviceCharge && restaurant?.serviceChargePercentage) || 0;
+  const serviceChargeLabel = restaurant?.settings?.serviceChrgTaxt || 'Service Charge'; // BUG-373
 
   // Check if restaurant has rooms
   const hasRooms = useMemo(() => 
@@ -135,8 +150,28 @@ const CollectPaymentPanel = ({
   // BUG-018 Part 2 (Apr-2026): complimentary lines (catalog OR runtime-marked)
   // carved out of billable math. Plain orders have billableItems === activeItems
   // → zero arithmetic drift vs pre-fix.
+  // BUG-018 Part 2 + BUG-298: isLineComplimentary = true when ALL qty is comp
   const isLineComplimentary = (item) =>
-    item.isComplementary === true || item.isComplementaryRuntime === true;
+    item.isComplementary === true ||
+    item.isComplementaryRuntime === true ||
+    ((item.compQty || 0) > 0 && (item.compQty || 0) >= (item.qty || 1));
+
+  // BUG-298: partial comp — some qty comp, some charged
+  const isPartialComp = (item) => {
+    const cq = item.compQty || 0;
+    return cq > 0 && cq < (item.qty || 1) && !isLineComplimentary(item);
+  };
+
+  // BUG-209: weight-item qty display helper — mirrors CartPanel.jsx L169-173.
+  // Weight items show unit label (e.g. "100gm", "500gm", "1.5Kg") instead of "x{qty}".
+  // Sub-1 Kg/L quantities are converted: 0.5Kg → "500gm", 0.5L → "500ml".
+  const formatQty = (item) =>
+    item?.isWeightItem
+      ? (item.qty < 1 && (item.itemUnit === 'Kg' || item.itemUnit === 'L')
+          ? `${Math.round(item.qty * 1000)}${item.itemUnit === 'Kg' ? 'gm' : 'ml'}`
+          : `${parseFloat((item.qty || 0).toFixed(2))}${item.itemUnit}`)
+      : `x${item.qty}`;
+
   const billableItems = useMemo(
     () => activeItems.filter(item => !isLineComplimentary(item)),
     [activeItems]
@@ -169,7 +204,12 @@ const CollectPaymentPanel = ({
   // the `grand_total` field (interpretation i: combined payable). Always 0
   // when isRoom is false or roomInfo is null.
   const roomBalance = useMemo(
-    () => (isRoom && roomInfo ? Math.max(0, roomInfo.balancePayment || 0) : 0),
+    // BUG-360: prefer live remaining_room_balance over stale balance_payment
+    // Fallback to balancePayment when no mid-stay payments exist (roomPaymentSummary null)
+    // Math.max(0,...) clamp stays — per OD-1: pass 0 when balance <= 0 (no refund flow)
+    () => (isRoom && roomInfo
+      ? Math.max(0, (roomInfo.roomPaymentSummary?.remainingRoomBalance ?? roomInfo.balancePayment ?? 0) - (roomInfo.discountAmount || 0)) // BUG-527: subtract check-in discount so balance reflects post-discount value
+      : 0),
     [isRoom, roomInfo]
   );
 
@@ -210,8 +250,12 @@ const CollectPaymentPanel = ({
 
   // Helper: get full line price for an item (includes addons + variations)
   const getItemLinePrice = (item) => {
-    if (item.totalPrice) return item.totalPrice;
-    const base = (item.price || 0) * (item.qty || 1);
+    // BUG-298: partial comp — only charge (qty - compQty) units
+    const cq = item.compQty || 0;
+    const qty = item.qty || 1;
+    const chargedQty = cq > 0 && cq < qty ? qty - cq : qty;
+    if (item.totalPrice && cq === 0) return item.totalPrice;
+    const base = (item.price || 0) * chargedQty;
     const addonSum = (item.addOns || []).reduce((s, a) => s + ((parseFloat(a.price) || 0) * (a.quantity || a.qty || 1)), 0);
     const varSum = (item.variation || []).reduce((s, group) => {
       // variation format: {name, values: [{label, optionPrice}]}
@@ -220,7 +264,7 @@ const CollectPaymentPanel = ({
         : (parseFloat(group.price) || 0);
       return s + groupSum;
     }, 0);
-    return base + ((addonSum + varSum) * (item.qty || 1));
+    return base + ((addonSum + varSum) * chargedQty);
   };
 
   // Per-item tax computation — uses product.tax if available, else 0%
@@ -228,13 +272,21 @@ const CollectPaymentPanel = ({
   // BUG-018 Part 2 (Apr-2026): iterate `billableItems` so complimentary lines are
   // carved out of the tax base. (CR-013 May-2026: SC/Tip/Delivery GST no longer
   // use the item-blended `avgGstRate`; they pull from per-component profile pcts.
-  // Item GST proration via `discountRatio` still uses billableItems-derived totals.)
+  // BUG-304: taxTotals splits discountable vs non-discountable GST/VAT so
+  // itemGstPostDiscount only reduces the discountable portion.
   const taxTotals = useMemo(() => {
     let sgst = 0, cgst = 0, vat = 0;
+    let dSgst = 0, dCgst = 0, dVat = 0; // BUG-304: discountable-only buckets
     billableItems.forEach(item => {
       const tax = item.tax;
       if (!tax || tax.percentage === 0) return;
+      const taxType = (tax.type || 'GST').toUpperCase();
+      // BUG-336: skip GST items when owner has disabled GST in Restaurant Settings
+      if (taxType === 'GST' && restaurant?.tax?.gstStatus === false) return;
+      // BUG-338: skip GST on room orders when roomGstApplicable is OFF
+      if (taxType === 'GST' && isRoom && restaurant?.settings?.roomGstApplicable === false) return;
       const linePrice = getItemLinePrice(item);
+      const isDiscountable = item.giveDiscount !== false; // BUG-304
       let taxAmt;
       if (tax.isInclusive) {
         taxAmt = linePrice - (linePrice / (1 + tax.percentage / 100));
@@ -243,20 +295,24 @@ const CollectPaymentPanel = ({
       }
       // Split into SGST + CGST for GST type (India dine-in)
       if ((tax.type || 'GST').toUpperCase() === 'GST') {
-        sgst += taxAmt / 2;
-        cgst += taxAmt / 2;
+        sgst += taxAmt / 2; cgst += taxAmt / 2;
+        if (isDiscountable) { dSgst += taxAmt / 2; dCgst += taxAmt / 2; } // BUG-304
       } else if ((tax.type || '').toUpperCase() === 'VAT') {
         // VAT items: full taxAmt accumulates into single VAT bucket
         // (no SGST/CGST half-split). See VAT_FIX_IMPLEMENTATION_HANDOVER.md.
         vat += taxAmt;
+        if (isDiscountable) { dVat += taxAmt; } // BUG-304
       }
     });
     return {
       sgst: Math.round(sgst * 100) / 100,
       cgst: Math.round(cgst * 100) / 100,
       vat:  Math.round(vat  * 100) / 100,
+      dSgst: Math.round(dSgst * 100) / 100, // BUG-304: discountable portion only
+      dCgst: Math.round(dCgst * 100) / 100,
+      dVat:  Math.round(dVat  * 100) / 100,
     };
-  }, [billableItems]);
+  }, [billableItems, restaurant, isRoom]); // BUG-336, BUG-338
 
   // Rewards state
   const [useLoyalty, setUseLoyalty] = useState(false);
@@ -281,6 +337,53 @@ const CollectPaymentPanel = ({
   const [showCouponDropdown, setShowCouponDropdown] = useState(false);
   const [discountType, setDiscountType] = useState(null); // 'percent' or 'flat'
   const [discountValue, setDiscountValue] = useState("");
+  const [discountFor, setDiscountFor] = useState('');     // CR-137: optional discount reason (max 50 chars)
+  const [isDiscountApplied, setIsDiscountApplied] = useState(false); // BUG-538: tracks backend-persisted role-base apply state
+
+  // CR-413: initialCoupon mount useEffect removed — cashier always chooses coupon (OD-INV-01=A)
+
+  // CR-412: seed useLoyalty from scan & order pre-tick on mount.
+  // Fires once at panel open. initialLoyalty = null for regular POS orders → no-op.
+  // OD-INV-02=B: pre-tick when redeemed=true regardless of redeemed_amount.
+  useEffect(() => {
+    if (initialLoyalty?.redeemed === true) setUseLoyalty(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []); // mount-only — initialLoyalty is frozen at panel open
+
+  // BUG-538: seed discount controls from role-base pre-applied discount on mount.
+  // BUG-538: seed discount controls from role-base pre-applied discount.
+  // BUG-595: changed from [] to reactive primitive deps so a socket-driven
+  // discount update (owner applies after cashier already has CPP open)
+  // re-seeds the controls correctly. Primitive deps prevent object-reference
+  // churn — effect only fires when the actual amount or type value changes.
+  useEffect(() => {
+    if (!initialDiscount) return;
+    setDiscountType(initialDiscount.discountType);        // already mapped 'fixed'→'flat' in orderTransform E1
+    setDiscountValue(String(initialDiscount.discount));
+    setDiscountFor(initialDiscount.discountNote || '');
+    setIsDiscountApplied(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialDiscount?.discount, initialDiscount?.discountType]); // BUG-595: reactive — re-seeds on socket update
+
+  // BUG-538: Apply / Unapply role-base discount via backend API.
+  // Apply: POST with actual amount. Unapply: POST with discount_amount=0.
+  // Validates before every POST: empty/0 → toast, percent>100 → toast.
+  const handleApplyDiscount = useCallback(async () => {
+    const val = parseFloat(discountValue || 0);
+    if (!val || val === 0)                              { toast.error('Please enter discount amount'); return; }
+    if (discountType === 'percent' && val > 100)        { toast.error('Please enter valid discount');  return; }
+    try {
+      if (isDiscountApplied) {
+        await applyOrderDiscount({ orderId, discountAmount: 0, discountType: discountType || 'percent', discountNote: '' });
+        setIsDiscountApplied(false);
+      } else {
+        await applyOrderDiscount({ orderId, discountAmount: val, discountType: discountType || 'percent', discountNote: discountFor || '' });
+        setIsDiscountApplied(true);
+      }
+    } catch {
+      toast.error('Failed to apply discount. Please try again.');
+    }
+  }, [isDiscountApplied, discountValue, discountType, discountFor, orderId]);
 
   // BUG-276: Service charge toggle — default ON, staff can uncheck per order
   // BUG-028 (Apr-2026): Default service-charge toggle to OFF; cashier must
@@ -376,6 +479,10 @@ const CollectPaymentPanel = ({
   const [tabName, setTabName] = useState(customer?.name || "");
   const [tabPhone, setTabPhone] = useState(customer?.phone || "");
 
+  // CR-116: B2B customer GST info
+  const [custGST, setCustGST] = useState("");
+  const [custGSTName, setCustGSTName] = useState("");
+
   // BUG-038 (May-2026): CRM typeahead state for the Credit/TAB customer
   // block, mirroring CartPanel.jsx:323–333. Mobile is the unique key.
   // We deliberately do NOT capture c.id — owner decision: no customer_id
@@ -393,6 +500,7 @@ const CollectPaymentPanel = ({
   // re-engaged orders. Picking a suggestion still flips this true via
   // selectTabCustomer; blank-out still resets via handleTab*Change.
   const [tabIsCustomerSelected, setTabIsCustomerSelected] = useState(false);
+  const [tabCrmId, setTabCrmId] = useState(null); // BUG-183: CRM customer ID for TAB billing (reversed BUG-038 owner decision 2026-08-26)
   const tabPhoneInputRef = useRef(null);
   const tabNameInputRef = useRef(null);
 
@@ -426,6 +534,25 @@ const CollectPaymentPanel = ({
       setTabShowPhoneSuggestions(false);
     }
   }, [tabPhone, tabIsCustomerSelected, isTabPayment]);
+
+  // BUG-183 Layer 2 OQ-1: auto-lookup/create CRM for manually-entered TAB customers.
+  // Fires when tabPhone reaches 10 digits and cashier did not pick from dropdown.
+  // lookupCustomer first — if found, capture existing ID. If not found and name
+  // provided, create new CRM profile silently. Never blocks bill confirmation.
+  useEffect(() => {
+    if (!isTabPayment || tabIsCustomerSelected || tabPhone.length !== 10) return;
+    lookupCustomer(tabPhone)
+      .then((found) => {
+        if (found?.id) {
+          setTabCrmId(found.id);
+        } else if (tabName.trim()) {
+          createCustomer({ name: tabName.trim(), phone: tabPhone }, restaurant?.id)
+            .then((created) => { if (created?.id) setTabCrmId(created.id); })
+            .catch(() => {});
+        }
+      })
+      .catch(() => {});
+  }, [tabPhone, tabIsCustomerSelected, isTabPayment]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (!isTabPayment) return;
@@ -462,12 +589,13 @@ const CollectPaymentPanel = ({
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
-  // BUG-038: pick handler — fills tabName + tabPhone only. c.id is
-  // intentionally DISCARDED to enforce owner decision: no customer_id
-  // in the bill-payment payload, mobile is the unique key.
+  // BUG-183: capture c.id — reversed BUG-038 decision (owner approved 2026-08-26).
+  // crm_customer_id now forwarded in collectBillExisting payload so backend
+  // links the TAB record to the CRM profile and populates user_name/cust_mobile.
   const selectTabCustomer = (c) => {
     setTabName(c.name);
     setTabPhone(c.phone);
+    setTabCrmId(c.id || null); // BUG-183
     setTabShowPhoneSuggestions(false);
     setTabShowNameSuggestions(false);
     setTabIsCustomerSelected(true);
@@ -481,6 +609,7 @@ const CollectPaymentPanel = ({
     setTabName(newName);
     if (!newName.trim() && tabIsCustomerSelected) {
       setTabPhone("");
+      setTabCrmId(null); // BUG-183
       setTabIsCustomerSelected(false);
     }
   };
@@ -490,6 +619,7 @@ const CollectPaymentPanel = ({
     setTabPhone(newPhone);
     if (!newPhone.trim() && tabIsCustomerSelected) {
       setTabName("");
+      setTabCrmId(null); // BUG-183
       setTabIsCustomerSelected(false);
     }
   };
@@ -583,11 +713,15 @@ const CollectPaymentPanel = ({
   //      "correct, coz it's bug" — instant cut-over to per-config rates.
   //   Pre-CR-013: SC/Tip/Delivery used `avgGstRate` (item-blended) which
   //   over-taxed high-item-GST carts and ignored configured rates entirely.
-  const discountRatio = itemTotal > 0 ? totalDiscount / itemTotal : 0;
-  const scTaxRate     = (restaurant?.serviceChargeTaxPct  || 0) / 100;
-  const delTaxRate    = (restaurant?.deliveryChargeGstPct || 0) / 100;
+  // BUG-304: use discountableTotal as denominator; only discount-eligible items' GST reduced
+  const discountableRatio = discountableTotal > 0 ? totalDiscount / discountableTotal : 0;
+  const scTaxRate         = (restaurant?.serviceChargeTaxPct  || 0) / 100;
+  const delTaxRate        = (restaurant?.deliveryChargeGstPct || 0) / 100;
 
-  const itemGstPostDiscount = (taxTotals.sgst + taxTotals.cgst) * (1 - discountRatio);
+  // BUG-304: discountable GST reduced by ratio; non-discountable GST unchanged
+  const itemGstPostDiscount =
+    (taxTotals.dSgst + taxTotals.dCgst) * (1 - discountableRatio)
+    + (taxTotals.sgst - taxTotals.dSgst) + (taxTotals.cgst - taxTotals.dCgst);
   const scGst               = serviceCharge  * scTaxRate;
   const tipGst              = tip            * scTaxRate;
   const deliveryGst         = deliveryCharge * delTaxRate;
@@ -628,7 +762,9 @@ const CollectPaymentPanel = ({
 
   // BUG-054: VAT proration mirrors GST (frozen TAX-003).
   // SC / Tip / Delivery tax math intentionally untouched per owner decision.
-  const vat = taxTotals.vat * (1 - discountRatio);
+  // BUG-304: same split for VAT — non-discountable items' VAT unchanged (OD-2 confirmed)
+  const vat = taxTotals.dVat * (1 - discountableRatio)
+            + (taxTotals.vat - taxTotals.dVat);
 
   const rawFinalTotal = Math.round((subtotal + sgst + cgst + vat) * 100) / 100;
 
@@ -637,9 +773,8 @@ const CollectPaymentPanel = ({
   // When totalRound is false, use raw total (2-decimal precision).
   // ROUND-002: round-off applies ONLY to Grand Total.
   const roundOffEnabled = restaurant?.totalRound !== false;  // default true
-  const finalTotal = rawFinalTotal > 0
-    ? (roundOffEnabled ? Math.ceil(rawFinalTotal) : Math.round(rawFinalTotal * 100) / 100)
-    : 0;
+  // CR-170: conditional round-off via shared helper (< 10 paise → floor, ≥ 10 paise → ceil)
+  const finalTotal = applyGrandTotalRoundOff(rawFinalTotal, roundOffEnabled);
   const roundOff = Math.round((finalTotal - rawFinalTotal) * 100) / 100;
 
   // BUG-ROOM-CASH-PILLS (Apr-2026): centralised grand total used by every
@@ -799,15 +934,7 @@ const CollectPaymentPanel = ({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [customer?.id]);
 
-  // Auto-apply best order-scope coupon when displayedCoupons changes
-  // (after initial fetch or after useLoyalty toggle re-filters the list).
-  useEffect(() => {
-    if (selectedCoupon || couponCode || !displayedCoupons.length) return;
-    const best = displayedCoupons.find(c => !c.requiresCartValidation && c.withinWindowNow !== false);
-    if (best) runValidate(best.code);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [displayedCoupons]);
-
+  // CR-408: auto-apply removed — cashier must choose coupon explicitly.
   // BUG-108 V1B (B-2): auto-remove a non-stackable coupon when cashier
   // enables loyalty redemption — silent removal + toast (no Pay-button block).
   useEffect(() => {
@@ -1041,7 +1168,7 @@ const CollectPaymentPanel = ({
       transactionId:   paymentMethod === 'card' ? cardTxnId : '',
       tip,
       splitPayments:   showSplit ? splitPayments.map(p => ({ method: p.method, amount: parseFloat(p.amount) || 0, transactionId: p.method === 'card' ? (p.transactionId || '') : '' })) : null,
-      tabContact:      isTabPayment ? { name: tabName, phone: tabPhone } : null,
+      tabContact:      isTabPayment ? { name: tabName, phone: tabPhone, crmId: tabCrmId } : null, // BUG-183
       // discount info — all fields needed by collect bill payload (OLD POS parity)
       discounts: {
         manual:               manualDiscount,
@@ -1079,6 +1206,7 @@ const CollectPaymentPanel = ({
         loyaltyPointsRedeemed: finalLoyaltyPoints,
         loyaltyRedemptionId:   null,
         walletBalance:        walletDiscount,
+        discountFor:          discountFor,             // CR-137
       },
       customer,
       itemTotal,
@@ -1092,6 +1220,8 @@ const CollectPaymentPanel = ({
       // any consumer that needs an explicit print field.
       printGstTax: Math.round((sgst + cgst) * 100) / 100,
       printVatTax: Math.round(vat * 100) / 100,
+      custGST,          // CR-116: B2B GST number
+      custGSTName,       // CR-116: B2B GST registered name
       // CR-013 Phase 1.5 D-GST-3 (May-2026): pass component-wise GST ₹ amounts
       // through to the BILL_PAYMENT and transferToRoom payload builders so
       // backend persists `service_gst_tax_amount` and `tip_tax_amount` with
@@ -1105,7 +1235,8 @@ const CollectPaymentPanel = ({
     // Transfer to Room — attach room selection
     if (paymentMethod === 'transferToRoom' && selectedRoom) {
       paymentData.isTransferToRoom = true;
-      paymentData.roomId = selectedRoom.tableId;
+      paymentData.roomId      = selectedRoom.tableId;   // kept for legacy compat
+      paymentData.roomOrderId = selectedRoom.orderId;   // CR-405-B: source_order_id for v1 contract
     }
 
     onPaymentComplete(paymentData);
@@ -1149,6 +1280,7 @@ const CollectPaymentPanel = ({
         gstTax:              Math.round((sgst + cgst) * 100) / 100, // BUG-006: UI tax value
         vatTax:              Math.round(vat * 100) / 100,           // CR-VAT-COLLECT: item-level VAT
         tip,                                                        // BUG-281: was hardcoded 0
+        printBillCustomerCopy: restaurant?.settings?.printBillCustomerCopy || false, // BUG-369
         // BUG-021 (Apr-2026, v2): forward runtime-complimentary row IDs
         // (+ catalog IDs as secondary) so the manual Print Bill output zeros
         // complimentary lines even if the backend-hydrated rawOrderDetails
@@ -1157,6 +1289,9 @@ const CollectPaymentPanel = ({
         runtimeComplimentaryFoodIds: (cartItems || [])
           .filter(i => i.isComplementaryRuntime === true && i.status !== 'cancelled' && !i.isCheckInMarker)
           .flatMap(i => [i.id, i.foodId].filter(v => v !== undefined && v !== null && v !== '')),
+        custGST,          // CR-116: B2B GST number for print
+        custGSTName,       // CR-116: B2B GST registered name for print
+        restaurantPhone: restaurant?.phone || '', // BUG-328
       };
       await onPrintBill(overrides);
     } finally {
@@ -1253,7 +1388,9 @@ const CollectPaymentPanel = ({
             same dropdown. Always percentage. Mutually exclusive with manual % / ₹.
             When a preset is selected, the value input is hidden (% is fixed).
             Selecting manual (% or ₹) clears preset. Selecting preset clears manual. */}
-        <div
+        {/* BUG-538: hide entire section when cashier has no discount permission (roleBaseDiscount=true + no role).
+            When roleBaseDiscount=false (default for all restaurants today) discountAllowed=true → zero change. */}
+        {discountAllowed && <div
           className="p-3 rounded-lg border"
           style={{ borderColor: COLORS.borderGray, opacity: selectedCoupon ? 0.6 : 1 }}
           data-testid="discount-section"
@@ -1269,6 +1406,7 @@ const CollectPaymentPanel = ({
                     // "None" — clear everything
                     setDiscountType(null);
                     setDiscountValue("");
+                    setDiscountFor('');                // CR-137
                     setSelectedDiscountType(null);
                   } else if (val === 'percent' || val === 'flat') {
                     // Manual mode — clear preset
@@ -1308,6 +1446,11 @@ const CollectPaymentPanel = ({
                   value={discountValue}
                   onChange={(e) => {
                     const val = parseFloat(e.target.value);
+                    // BUG-538: changing amount while applied → auto-unapply (spec §4.5, fire-and-forget)
+                    if (isDiscountApplied && showApplyButton) {
+                      setIsDiscountApplied(false);
+                      applyOrderDiscount({ orderId, discountAmount: 0, discountType: discountType || 'percent', discountNote: '' }).catch(() => {});
+                    }
                     if (e.target.value === '' || e.target.value === '-') { setDiscountValue(''); return; }
                     if (val < 0) { setDiscountValue(''); return; }
                     if (discountType === 'percent' && val > 100) { setDiscountValue('100'); return; }
@@ -1328,13 +1471,41 @@ const CollectPaymentPanel = ({
               )}
             </div>
           </div>
+          {/* CR-137: Optional discount reason — appears only when a discount is active */}
+          {(manualDiscount > 0 || presetDiscount > 0) && (
+            <div className="mt-2">
+              <input
+                type="text"
+                placeholder="Reason (optional) — e.g. Staff, Event, Loyalty"
+                value={discountFor}
+                onChange={(e) => setDiscountFor(e.target.value.slice(0, 50))}
+                className="w-full px-2 py-1.5 rounded-lg border text-sm outline-none"
+                style={{ borderColor: COLORS.borderGray }}
+                data-testid="discount-for-input"
+              />
+            </div>
+          )}
           {/* BUG-108 P1 Q10: Discount disabled when a coupon is applied. */}
           {selectedCoupon && (
             <div className="text-xs mt-1 ml-6 italic" style={{ color: COLORS.grayText }} data-testid="discount-helper-text">
               {BUG108_COPY.discountBlockedByCoupon}
             </div>
           )}
-        </div>
+          {/* BUG-538: Apply/Unapply button — visible only when roleBaseDiscount=true + has permission + placed order */}
+          {showApplyButton && (
+            <div className="mt-2 flex justify-end">
+              <button
+                data-testid="discount-apply-btn"
+                onClick={handleApplyDiscount}
+                disabled={selectedCoupon !== null}
+                className="px-3 py-1.5 rounded-lg text-sm font-medium text-white disabled:opacity-50"
+                style={{ background: isDiscountApplied ? '#ef4444' : COLORS.primaryGreen }}
+              >
+                {isDiscountApplied ? 'Unapply' : 'Apply'}
+              </button>
+            </div>
+          )}
+        </div>}
 
         {/* 2. Coupon Section - Only if customer entered and coupons enabled in profile */}
         {/* BUG-108 V1B (2026-05-25): full type-ahead dropdown UX (E-8).
@@ -1594,7 +1765,7 @@ const CollectPaymentPanel = ({
                   className="w-4 h-4 accent-green-600"
                   data-testid="service-charge-toggle-main"
                 />
-                <span className="text-sm font-medium" style={{ color: COLORS.darkText }}>⚙️ Service Charge</span>
+                <span className="text-sm font-medium" style={{ color: COLORS.darkText }}>⚙️ {serviceChargeLabel}</span>
                 <span className="text-xs" style={{ color: COLORS.grayText }}>({serviceChargePercentage}%)</span>
               </div>
             </label>
@@ -1733,6 +1904,20 @@ const CollectPaymentPanel = ({
                       ₹{(roomInfo.roomPrice || 0).toLocaleString()}
                     </span>
                   </div>
+                  {/* BUG-428 OD-428-01/02/03: Lodging GST line — show when gstTax > 0 AND flag enabled */}
+                  {(roomInfo.gstTax > 0) && (restaurant?.settings?.roomGstApplicable !== false) && (
+                    <div className="flex justify-between" data-testid="checkout-room-gst">
+                      <span style={{ color: COLORS.grayText }}>Lodging GST</span>
+                      <span style={{ color: COLORS.darkText }}>+₹{(roomInfo.gstTax || 0).toLocaleString()}</span>
+                    </div>
+                  )}
+                  {/* BUG-527: check-in discount read-only line — mirrors Lodging GST conditional pattern (OD-BUG527-01) */}
+                  {(roomInfo.discountAmount || 0) > 0 && (
+                    <div className="flex justify-between" data-testid="checkout-room-checkin-discount">
+                      <span style={{ color: COLORS.grayText }}>Check-in Discount</span>
+                      <span style={{ color: COLORS.darkText }}>−₹{(roomInfo.discountAmount || 0).toLocaleString()}</span>
+                    </div>
+                  )}
                   <div className="flex justify-between">
                     <span style={{ color: COLORS.grayText }}>Advance Paid</span>
                     <span style={{ color: COLORS.darkText }} data-testid="checkout-room-advance">
@@ -1821,18 +2006,26 @@ const CollectPaymentPanel = ({
                     <div className="px-3 pt-2 space-y-1.5 max-h-48 overflow-y-auto">
                       {(cartItems || []).filter(i => !i.isCheckInMarker).map((item, idx) => {
                         const isComp = isLineComplimentary(item);
+                        const isPartial = isPartialComp(item);
                         const isCatalogLocked = item.isComplementary === true;
                         // BUG-022 (Apr-2026): cancelled lines must render strikethrough + gray.
                         const isCancelled = item.status === 'cancelled';
                         return (
                         <div key={idx} className="flex justify-between items-start gap-2">
-                          {/* BUG-018 Part 2: complimentary checkbox (locked for catalog items) */}
+                          {/* BUG-018 Part 2 + BUG-298: comp checkbox — opens modal for qty>1 */}
                           <input
                             type="checkbox"
                             className="mt-0.5 cursor-pointer disabled:cursor-not-allowed disabled:opacity-60"
-                            checked={isComp}
-                            disabled={isCatalogLocked || !onToggleComplimentary || isCancelled}
-                            onChange={() => onToggleComplimentary && onToggleComplimentary(item.id)}
+                            checked={isComp || isPartial}
+                            disabled={isCatalogLocked || isCancelled}
+                            onChange={() => {
+                              if (isCatalogLocked || isCancelled) return;
+                              if ((item.qty || 1) > 1 && onSetCompItem) {
+                                onSetCompItem(item);
+                              } else {
+                                onToggleComplimentary && onToggleComplimentary(item.id);
+                              }
+                            }}
                             data-testid={`complimentary-checkbox-${item.id}`}
                             title={isCatalogLocked ? 'Catalog-complimentary — cannot be unchecked' : 'Mark as complimentary'}
                           />
@@ -1850,13 +2043,25 @@ const CollectPaymentPanel = ({
                                     (Complimentary)
                                   </span>
                                 )}
+                                {/* CR-104: inline reason input — only for runtime-comp (cashier-marked), not catalog-locked */}
+                                {isComp && !isCatalogLocked && (
+                                  <input
+                                    type="text"
+                                    className="block w-full text-xs text-zinc-500 border border-zinc-200 rounded px-2 py-0.5 mt-0.5 outline-none focus:border-zinc-400 bg-transparent"
+                                    placeholder="Reason (optional)"
+                                    value={item.compReason || ''}
+                                    onChange={e => onSetCompReason && onSetCompReason(item.id, e.target.value)}
+                                    onClick={e => e.stopPropagation()}
+                                    data-testid={`comp-reason-input-${item.id}`}
+                                  />
+                                )}
                                 {isCancelled && (
                                   <span className="ml-1 text-[10px] font-semibold" style={{ color: '#9CA3AF' }}>
                                     (Cancelled)
                                   </span>
                                 )}
                               </span>
-                              <span className="ml-2" style={{ color: COLORS.grayText }}>x{item.qty}</span>
+                              <span className="ml-2" style={{ color: COLORS.grayText }}>{formatQty(item)}</span>{/* BUG-209 */}
                             </div>
                             {/* BUG-073: guard against empty customization wrapper */}
                             {item.customizations && (item.customizations.size || item.customizations.variants?.length > 0 || (item.selectedAddons?.length > 0 || item.addOns?.length > 0 || item.customizations.addons?.length > 0)) && (
@@ -1939,6 +2144,21 @@ const CollectPaymentPanel = ({
                           )}
                         </div>
                       </div>
+                      {/* CR-137: Optional discount reason — inline path */}
+                      {manualDiscount > 0 && (
+                        <div className="mt-1.5">
+                          <input
+                            type="text"
+                            placeholder="Reason (optional)"
+                            value={discountFor}
+                            onChange={(e) => setDiscountFor(e.target.value.slice(0, 50))}
+                            className="w-full px-2 py-1 rounded-lg border text-xs outline-none"
+                            style={{ borderColor: COLORS.borderGray }}
+                            data-testid="discount-for-input-inline"
+                          />
+                        </div>
+                      )}
+                      {/* BUG-108 P1 Q10: Inline-mirror — disabled when a coupon is applied. */}
                       {selectedCoupon && (
                         <div className="text-xs mt-1 ml-5 italic" style={{ color: COLORS.grayText }}>
                           {BUG108_COPY.discountBlockedByCoupon}
@@ -2119,7 +2339,7 @@ const CollectPaymentPanel = ({
                             className="w-3.5 h-3.5 accent-green-600"
                             data-testid="service-charge-toggle"
                           />
-                          <span style={{ color: COLORS.grayText }}>Service Charge ({serviceChargePercentage}%)</span>
+                          <span style={{ color: COLORS.grayText }}>{serviceChargeLabel} ({serviceChargePercentage}%)</span>
                         </label>
                         <span style={{ color: COLORS.darkText }}>₹{serviceCharge.toFixed(2)}</span>
                       </div>
@@ -2174,6 +2394,7 @@ const CollectPaymentPanel = ({
             <div className="space-y-2 pb-3 border-b" style={{ borderColor: COLORS.borderGray }}>
               {(cartItems || []).filter(i => !i.isCheckInMarker).map((item, idx) => {
                 const isComp = isLineComplimentary(item);
+                const isPartial = isPartialComp(item);
                 const isCatalogLocked = item.isComplementary === true;
                 // BUG-022 (Apr-2026): cancelled lines must render strikethrough + gray,
                 // matching CartPanel.jsx behaviour on the Order page. Math already
@@ -2181,13 +2402,22 @@ const CollectPaymentPanel = ({
                 const isCancelled = item.status === 'cancelled';
                 return (
                 <div key={idx} className="flex justify-between items-start gap-2">
-                  {/* BUG-018 Part 2: complimentary checkbox (locked for catalog items) */}
+                  {/* BUG-018 Part 2 + BUG-298: comp checkbox — opens MarkCompModal for qty>1 */}
                   <input
                     type="checkbox"
                     className="mt-1 cursor-pointer disabled:cursor-not-allowed disabled:opacity-60"
-                    checked={isComp}
-                    disabled={isCatalogLocked || !onToggleComplimentary || isCancelled}
-                    onChange={() => onToggleComplimentary && onToggleComplimentary(item.id)}
+                    checked={isComp || isPartial}
+                    disabled={isCatalogLocked || isCancelled}
+                    onChange={() => {
+                      if (isCatalogLocked || isCancelled) return;
+                      if ((item.qty || 1) > 1 && onSetCompItem) {
+                        // multi-qty: open MarkCompModal for partial/full choice
+                        onSetCompItem(item);
+                      } else {
+                        // single qty: direct toggle
+                        onToggleComplimentary && onToggleComplimentary(item.id);
+                      }
+                    }}
                     data-testid={`complimentary-checkbox-${item.id}`}
                     title={isCatalogLocked ? 'Catalog-complimentary — cannot be unchecked' : 'Mark as complimentary'}
                   />
@@ -2205,13 +2435,30 @@ const CollectPaymentPanel = ({
                             (Complimentary)
                           </span>
                         )}
+                        {/* CR-104: inline reason input — only for runtime-comp (cashier-marked), not catalog-locked */}
+                        {isComp && !isCatalogLocked && (
+                          <input
+                            type="text"
+                            className="block w-full text-xs text-zinc-500 border border-zinc-200 rounded px-2 py-0.5 mt-0.5 outline-none focus:border-zinc-400 bg-transparent"
+                            placeholder="Reason (optional)"
+                            value={item.compReason || ''}
+                            onChange={e => onSetCompReason && onSetCompReason(item.id, e.target.value)}
+                            onClick={e => e.stopPropagation()}
+                            data-testid={`comp-reason-input-${item.id}`}
+                          />
+                        )}
+                        {isPartial && (
+                          <span className="ml-1 text-[10px] font-semibold" style={{ color: COLORS.primaryGreen }}>
+                            ({item.compQty} of {item.qty} Comp)
+                          </span>
+                        )}
                         {isCancelled && (
                           <span className="ml-1 text-[10px] font-semibold" style={{ color: '#9CA3AF' }}>
                             (Cancelled)
                           </span>
                         )}
                       </span>
-                      <span className="ml-2" style={{ color: COLORS.grayText }}>x{item.qty}</span>
+                      <span className="ml-2" style={{ color: COLORS.grayText }}>{formatQty(item)}</span>{/* BUG-209 */}
                     </div>
                     {/* BUG-073: guard against empty customization wrapper */}
                     {item.customizations && (item.customizations.size || item.customizations.variants?.length > 0 || (item.selectedAddons?.length > 0 || item.addOns?.length > 0 || item.customizations.addons?.length > 0)) && (
@@ -2236,12 +2483,22 @@ const CollectPaymentPanel = ({
                       </div>
                     )}
                   </div>
-                  <span
-                    className={`ml-4 font-medium ${(isComp || isCancelled) ? 'line-through' : ''}`}
-                    style={{ color: (isComp || isCancelled) ? COLORS.grayText : COLORS.darkText }}
-                  >
-                    ₹{getItemLinePrice(item).toLocaleString()}
-                  </span>
+                  <div>
+                    {/* BUG-298: partial comp shows original strikethrough + charged price */}
+                    {isPartial && (
+                      <div className="text-right">
+                        <span className="text-xs line-through" style={{ color: COLORS.grayText }}>
+                          ₹{((item.price || 0) * (item.qty || 1)).toLocaleString()}
+                        </span>
+                      </div>
+                    )}
+                    <span
+                      className={`ml-4 font-medium ${(isComp || isCancelled) ? 'line-through' : ''}`}
+                      style={{ color: (isComp || isCancelled) ? COLORS.grayText : COLORS.darkText }}
+                    >
+                      ₹{getItemLinePrice(item).toLocaleString()}
+                    </span>
+                  </div>
                 </div>
                 );
               })}
@@ -2326,7 +2583,7 @@ const CollectPaymentPanel = ({
             <div className="mt-3 pt-3 border-t" style={{ borderColor: COLORS.borderGray }} data-testid="service-charge-row">
               <div className="flex justify-between text-sm items-center">
                 <span style={{ color: COLORS.grayText }}>
-                  Service Charge <span className="text-xs" style={{ opacity: 0.7 }}>@ {serviceChargePercentage}%{totalDiscount > 0 ? ` on ₹${subtotalAfterDiscount.toLocaleString()}` : ''}</span>
+                  {serviceChargeLabel} <span className="text-xs" style={{ opacity: 0.7 }}>@ {serviceChargePercentage}%{totalDiscount > 0 ? ` on ₹${subtotalAfterDiscount.toLocaleString()}` : ''}</span>
                 </span>
                 <span style={{ color: COLORS.darkText }}>₹{serviceCharge.toFixed(2)}</span>
               </div>
@@ -2695,7 +2952,8 @@ const CollectPaymentPanel = ({
                               const newSplit = prev.map(s => ({ ...s }));
                               const typedNum = parseFloat(newSplit[idx].amount) || 0;
                               const othersSum = newSplit.reduce((sum, s, i) => i !== idx ? sum + (parseFloat(s.amount) || 0) : sum, 0);
-                              const maxForThisRow = Math.max(0, Math.round((effectiveTotal - othersSum) * 100) / 100);
+                              const splitCap = isRoom ? effectiveTotal - roomBalance : effectiveTotal; // BUG-530: food-only cap for room orders; mirrors BUG-527 E3 threshold
+                              const maxForThisRow = Math.max(0, Math.round((splitCap - othersSum) * 100) / 100);
                               // Clamp if over max
                               if (typedNum > maxForThisRow) {
                                 newSplit[idx].amount = String(maxForThisRow);
@@ -2705,7 +2963,7 @@ const CollectPaymentPanel = ({
                               if (newSplit.length === 2) {
                                 const otherIdx = idx === 0 ? 1 : 0;
                                 if (!newSplit[otherIdx].amount || newSplit[otherIdx].amount === '0') {
-                                  const remaining = Math.max(0, Math.round((effectiveTotal - clampedNum) * 100) / 100);
+                                  const remaining = Math.max(0, Math.round((splitCap - clampedNum) * 100) / 100);
                                   newSplit[otherIdx].amount = remaining > 0 ? String(remaining) : "";
                                 }
                               }
@@ -2771,7 +3029,7 @@ const CollectPaymentPanel = ({
                       </div>
                       <div className="text-xs mb-2 space-y-0.5" style={{ color: COLORS.grayText }}>
                         {barItems.map((item, idx) => (
-                          <div key={idx}>{item.name} x{item.qty}</div>
+                          <div key={idx}>{item.name} {formatQty(item)}{/* BUG-209 */}</div>
                         ))}
                       </div>
                       <div className="flex gap-2">
@@ -2809,7 +3067,7 @@ const CollectPaymentPanel = ({
                       </div>
                       <div className="text-xs mb-2 space-y-0.5" style={{ color: COLORS.grayText }}>
                         {kitchenItems.map((item, idx) => (
-                          <div key={idx}>{item.name} x{item.qty}</div>
+                          <div key={idx}>{item.name} {formatQty(item)}{/* BUG-209 */}</div>
                         ))}
                       </div>
                       <div className="flex gap-2">
@@ -2847,7 +3105,7 @@ const CollectPaymentPanel = ({
                       </div>
                       <div className="text-xs space-y-0.5" style={{ color: COLORS.grayText }}>
                         {cancelledItems.map((item, idx) => (
-                          <div key={idx} className="line-through">{item.name} x{item.qty} - ₹{getItemLinePrice(item)}</div>
+                          <div key={idx} className="line-through">{item.name} {formatQty(item)} - ₹{getItemLinePrice(item)}{/* BUG-209 */}</div>
                         ))}
                       </div>
                     </div>
@@ -3033,6 +3291,28 @@ const CollectPaymentPanel = ({
           )}
 
           {/* Transfer to Room — Room Picker */}
+
+          {/* CR-116: B2B Customer GST Information */}
+          <div className="mt-3 pt-3 border-t" style={{ borderColor: COLORS.borderGray }} data-testid="b2b-gst-section">
+            <div className="text-xs mb-2 font-medium" style={{ color: COLORS.grayText }}>B2B Invoice (Optional)</div>
+            <div className="grid grid-cols-2 gap-2">
+              <div>
+                <input value={custGST} onChange={e => setCustGST(e.target.value)}
+                  placeholder="GST Number"
+                  className="w-full h-8 text-xs border rounded-md px-2 outline-none focus:ring-1"
+                  style={{ borderColor: COLORS.borderGray, color: COLORS.primaryText }}
+                  data-testid="collect-bill-cust-gst" />
+              </div>
+              <div>
+                <input value={custGSTName} onChange={e => setCustGSTName(e.target.value)}
+                  placeholder="GST Registered Name"
+                  className="w-full h-8 text-xs border rounded-md px-2 outline-none focus:ring-1"
+                  style={{ borderColor: COLORS.borderGray, color: COLORS.primaryText }}
+                  data-testid="collect-bill-cust-gst-name" />
+              </div>
+            </div>
+          </div>
+
           {paymentMethod === "transferToRoom" && !showSplit && (
             <div className="mt-3 pt-3 border-t" style={{ borderColor: COLORS.borderGray }} data-testid="room-picker-section">
               <div className="text-xs mb-2 font-medium flex items-center justify-between" style={{ color: COLORS.grayText }}>
@@ -3106,7 +3386,7 @@ const CollectPaymentPanel = ({
             (paymentMethod === 'cash' && !showSplit && (parseFloat(amountReceived || 0) < effectiveTotal)) ||
             (isTabPayment && !showSplit && (!tabName.trim() || tabPhone.replace(/\D/g, '').length !== 10)) ||
             (showSplit && splitType === 'payment' && splitPayments.some(sp => sp.method === 'card' && parseFloat(sp.amount) > 0 && (!sp.transactionId || sp.transactionId.length !== 4))) ||
-            (showSplit && splitType === 'payment' && splitPayments.reduce((s, p) => s + (parseFloat(p.amount) || 0), 0) < effectiveTotal) ||
+            (showSplit && splitType === 'payment' && splitPayments.reduce((s, p) => s + (parseFloat(p.amount) || 0), 0) < (isRoom ? effectiveTotal - roomBalance : effectiveTotal)) || // BUG-527: room orders — split covers food+associated; room settled via paid_room=yes
             isProcessingPayment
           }
           className="w-full py-4 rounded-lg font-bold text-lg text-white transition-colors disabled:opacity-50 flex items-center justify-center gap-2"

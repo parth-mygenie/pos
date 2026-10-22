@@ -74,7 +74,9 @@ export const fromAPI = {
     // TOP LEVEL of the response (not in `restaurants[0]`). Pass it down
     // explicitly so the restaurant builder still owns the resulting
     // `printerAgents` field on the canonical restaurant object.
-    restaurant: fromAPI.restaurant(api.restaurants?.[0], api.print_agent, api.restaurant_discount_type),
+    // BUG-523: v1 also places `payment_types` at ROOT level — pass it as override so
+    // fromAPI.restaurant uses root array (includes 'partial') over restaurants[0].payment_types.
+    restaurant: fromAPI.restaurant(api.restaurants?.[0], api.print_agent, api.restaurant_discount_type, api.payment_types),
     permissions: api.role || [],
   }),
 
@@ -101,8 +103,9 @@ export const fromAPI = {
    * @param {*} printAgent - the TOP-LEVEL `print_agent` value (new v1 endpoint
    *   places this OUTSIDE `restaurants[0]`). Optional; missing → []. Owner
    *   override 2026-05-08.
+   * @param {Array} [paymentTypesOverride] - ROOT-LEVEL `payment_types` array. BUG-523.
    */
-  restaurant: (api, printAgent, discountTypesOverride) => {
+  restaurant: (api, printAgent, discountTypesOverride, paymentTypesOverride) => { // BUG-523
     if (!api) return null;
     return {
       id: api.id,
@@ -114,6 +117,13 @@ export const fromAPI = {
       coverPhoto: getImageUrl(api.cover_photo),
       currency: api.currency || 'INR',
       currencySymbol: api.currency === 'INR' ? '₹' : api.currency,
+
+      // CR-078 · Smart Purchase / CR-077 Receive pill dependency:
+      //   Surface restaurant_type_flag ("normal" | "franchise" | "master") to consumers.
+      //   Used by Sidebar to conditionally render the Receive pill (CR-078 B13:
+      //   visible for franchise + master, hidden for normal or undefined).
+      restaurantTypeFlag: api.restaurant_type_flag || null,
+      parentRestaurantId: api.parent_restaurant_id || null,
       
       // Features
       features: {
@@ -125,6 +135,7 @@ export const fromAPI = {
         tip: toBoolean(api.tip),
         serviceCharge: toBoolean(api.service_charge),
         deliveryAssign: toBoolean(api.delivery_assign),
+        scheduleOrderEnabled: toBoolean(api.schedule_order), // BUG-331
       },
       
       // Service charge settings
@@ -177,7 +188,7 @@ export const fromAPI = {
       },
       
       // Payment types
-      paymentTypes: fromAPI.paymentTypes(api.payment_types),
+      paymentTypes: fromAPI.paymentTypes(paymentTypesOverride ?? api.payment_types), // BUG-523
       
       // Payment method toggles
       paymentMethods: {
@@ -222,7 +233,7 @@ export const fromAPI = {
       defaultOrderStatus: F_ORDER_STATUS_API[api.def_ord_status] || null,
 
       // Search options
-      searchOptions: api.search_by || ['order id', 'table no', 'user id'],
+      searchOptions: api.search_by || ['order id', 'table no', 'phone no', 'user id'], // BUG-586: phone search on by default
 
       // Room Module V2 — Profile flags driving Room Check-In layout/visibility.
       // Additive per V2 §9.3 / §13.5 — do not rename or remove existing keys above.
@@ -233,6 +244,18 @@ export const fromAPI = {
         roomGstApplicable: toBoolean(api.room_gst_applicable),
         foodPriceWithPaisa: toBoolean(api.food_price_with_paisa),
         billDateFormat: api.bill_date_format || 'dd/MMM/yyyy hh:mm a',
+        // BUG-386: room accommodation GST slab config.
+        // room_gst arrives as a JSON string under restaurants[0].settings.room_gst.
+        // parseRoomGstSlabs() safely returns null on missing/malformed input.
+        roomGstSlabs: (() => {
+          try {
+            const raw = api.settings?.room_gst;
+            if (!raw) return null;
+            const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
+            if (!Array.isArray(parsed?.slabs) || parsed.slabs.length === 0) return null;
+            return { basis: parsed.basis ?? 'unit_accommodation_per_day', slabs: parsed.slabs };
+          } catch { return null; }
+        })(),
       },
 
       // POS2-007 Phase 1 — pass-through ONLY (no FE consumer this CR).
@@ -326,6 +349,9 @@ export const fromAPI = {
       // place-order / collect-bill / KOT-checkbox flow. Surfaced here only so
       // the Settings page (ViewEditViews.jsx) can display and edit it.
       aggregatorAutoKot: toBoolean(apiSettings.aggregator_auto_kot),
+      // CR-118: aggregator auto bill print + stage (Acknowledged or Ready)
+      aggregatorAutoBill: toBoolean(apiSettings.aggregator_auto_bill),
+      aggregatorAutoBillStage: (apiSettings.aggregator_auto_bill_stage || 'Ready').toLowerCase(), // 'acknowledged' | 'ready'
       // BUG-AUTOKOT-MAPPING (May-2026, REVISITED 2026-05-01): `autoKot` (in-house
       // Auto KOT) is exposed as `print_kot` at the restaurant ROOT — confirmed
       // against the live preprod API on 2026-05-01 (restaurant 478):
@@ -346,6 +372,16 @@ export const fromAPI = {
       // root-level snake_case path.
       autoBill:          toBoolean(apiSettings.billing_auto_bill_print),
       defaultPrepTime: parseInt(apiSettings.default_prep_time) || 15,
+      // CR-109: Prep time bracket config for dynamic aggregator prep time computation
+      prepTimeBonusConfig: (() => {
+        const raw = apiSettings.settings?.prep_time_bonus_config ?? apiSettings.prep_time_bonus_config;
+        if (Array.isArray(raw)) return raw;
+        if (typeof raw === 'string') { try { return JSON.parse(raw); } catch { return []; } }
+        return [];
+      })(),
+      prepTimeCountMethod: apiSettings.settings?.prep_time_count_method ?? apiSettings.prep_time_count_method ?? 'quantity',
+      // CR-109: Auto-accept toggle for aggregator orders
+      autoPrepTimeAck: toBoolean(apiSettings.settings?.auto_prep_time_ack ?? apiSettings.auto_prep_time_ack),
 
       // POS2-007 Phase 1 — confirm-order tone selector (FE override consumer).
       // Value lives nested under `restaurants[0].settings.confirm_order_tone`
@@ -360,6 +396,31 @@ export const fromAPI = {
       // Exposed for any future settings-page UI; do NOT add a consumer
       // without a new owner-approved CR.
       aggregatorOrderTone: apiSettings.settings?.aggregator_order_tone ?? apiSettings.aggregator_order_tone ?? null,
+
+      // BUG-144: Token number display/print gate. Backend field: settings.use_token ("Yes"/"No").
+      // When true, OrderCard shows daily_token and print payloads include it.
+      useToken: toBoolean(apiSettings.settings?.use_token),
+      showScanPopup: toBoolean(apiSettings.settings?.show_scan_popup ?? 1), // CR-056: default ON (1 = enabled)
+      // CR-148 BUG FIX: show_popular_category missing from boot transform — Popular tab was always hidden.
+      // Dual path mirrors confirmOrderTone pattern (root fallback for tenants that flatten the field).
+      showPopularCategory: toBoolean(apiSettings.show_popular_category ?? apiSettings.settings?.show_popular_category),
+      // CR-352: printer type routing gate — 'agent' = Printer Agent device, 'direct' = Direct Printer (default)
+      // Backend field: restaurants[0].settings.printer_agent = "Yes" (agent) | "No" / missing (direct)
+      printerType: apiSettings.settings?.printer_agent === 'Yes' ? 'agent' : 'direct',
+      // BUG-366: restaurantFor was missing from this transform — restaurant.settings.restaurantFor was always
+      // undefined, so StationsTab's food_court guard (restaurantFor === 'food_court') never passed for any
+      // account. Backend field: restaurants[0].settings.restaurant_for (nested in settings sub-object, NOT
+      // at the restaurants[0] root). Dual-path for safety: settings-nested first, root fallback.
+      restaurantFor: apiSettings.settings?.restaurant_for || apiSettings.restaurant_for || 'Normal',
+      // BUG-373: serviceChrgTaxt was missing from this transform — custom label set in wizard was ignored
+      // everywhere (CollectPaymentPanel, print payload). Dual-path mirrors BUG-366 restaurantFor fix.
+      // Backend field: restaurants[0].settings.service_chrg_taxt
+      serviceChrgTaxt: apiSettings.settings?.service_chrg_taxt || apiSettings.service_chrg_taxt || 'Service Charge',
+      // BUG-369: print_bill_customer_copy missing — Printer Agent never received the customer copy flag
+      printBillCustomerCopy: apiSettings.settings?.print_bill_customer_copy === 'Yes' || apiSettings.print_bill_customer_copy === 'Yes' || false,
+      whatsappMessage: apiSettings.settings?.whatsapp_message === 'Yes' || apiSettings.settings?.whatsapp_message === true, // BUG-572: accepts both string "Yes" and boolean true; path: restaurants[0].settings.whatsapp_message
+      eInvoice: apiSettings.settings?.e_invoice === 'Yes' || apiSettings.settings?.e_invoice === true, // CR-431: accepts both string "Yes" and boolean true; path: restaurants[0].settings.e_invoice
+      roleBaseDiscount: toBoolean(apiSettings.settings?.role_base_discount ?? apiSettings.role_base_discount), // BUG-538: gates discount section in CPP — dual-path mirrors all other settings fields
     };
   },
 };

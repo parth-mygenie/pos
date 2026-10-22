@@ -1,17 +1,19 @@
 import { useState, useEffect, useRef, useLayoutEffect, useCallback } from "react";
+import { createPortal } from "react-dom";
 import { useNavigate, useLocation } from "react-router-dom";
 import { 
   ChevronDown, User, Home as HomeIcon, ClipboardList, BarChart3, 
   UtensilsCrossed, Users, Wallet, Package, Settings, LogOut, 
   PanelLeftClose, PanelLeft, RefreshCw, Bell, BellOff, Eye,
-  LayoutGrid, List, Columns, Rows, LineChart, Banknote, Store as StoreIcon, Receipt
-} from "lucide-react";
+  LayoutGrid, List, Columns, Rows, LineChart, Banknote, Store as StoreIcon, Receipt, Link2, ArrowLeftRight, BedDouble, Menu
+} from "lucide-react"; // BUG-555 B1
 import { COLORS, GENIE_LOGO_URL } from "../../constants";
 import { useAuth, useRestaurant, useMenu, useTables, useSettings } from "../../contexts";
 import { useOrders } from "../../contexts";
 import { useNotifications } from "../../contexts/NotificationContext";
 import { useToast } from "../../hooks/use-toast";
 import { clearInsightsCache } from "../../api/services/insightsCache";
+import { getCommonToken, logoutFromOutlet } from '../../api/services/authService'; // CR-166
 import { useInsightsCacheSafe } from "../../contexts/InsightsCacheContext"; // BUG-136
 
 // BUG-136: Sidebar scroll position persistence across navigations
@@ -44,7 +46,9 @@ const SIDEBAR_PERMISSIONS = {
   credit: 'pos',
   reports: 'report',
   settings: 'restaurant_settings',
+  inventory: 'inventory',      // CR-072
   insights: 'report',
+  pms: 'pos',               // CR-358-P1: Rooms & Reservations (hotels only — features.room gate)
 };
 
 // CR-041: Coming Soon items (placeholders for TBD screens)
@@ -91,10 +95,15 @@ const sidebarMenuItems = [
     label: "Daily Report",
     icon: BarChart3,
     children: [
+      { id: "profit-loss", label: "P&L Report", path: "/reports-module/profit-loss" },  // CR-094
+      { id: "consumption-report", label: "Consumption Report", path: "/reports-module/consumption-report" }, // CR-093
       { id: "summary", label: "Sales Summary", path: "/reports/summary" },
       { id: "audit", label: "Order Report", path: "/reports/audit" },
-      { id: "item-report", label: "Item Report", comingSoon: true },
+      // CR-415: item-report (Coming Soon) removed
+      { id: "order-report-beta", label: "Orders (Beta)", path: "/reports-module/order-report-beta" }, // CR-117
       { id: "insights-settlement", label: "Settlement Report", path: "/reports-module/settlement" },
+      { id: "expense-report", label: "Expense Report", path: "/reports-module/expense-report" }, // BUG-FIX: sidebar entry for CR-061 Expense Report (was only under Insights)
+      { id: "purchase-report", label: "Purchase Report", path: "/reports-module/purchase-report" }, // CR-150
     ],
   },
   {
@@ -103,14 +112,21 @@ const sidebarMenuItems = [
     icon: Settings,
     children: [
       { id: "restaurant-setup", label: "Restaurant Setup", path: "/restaurant-settings" },
-      { id: "table-management", label: "Table Management", comingSoon: true },
-      { id: "printers", label: "Printers", comingSoon: true },
-      { id: "operating-hours", label: "Operating Hours", comingSoon: true },
-      { id: "cancellation-reasons", label: "Cancellation Reasons", comingSoon: true },
-      { id: "employee-management", label: "Employee Management", comingSoon: true },
+      { id: "delivery-management", label: "Delivery Management", path: "/delivery-management" }, // CR-147
+      { id: "table-management", label: "Table Management", path: "/settings" }, // CR-060
+      { id: "printers", label: "Printers", path: "/settings" }, // CR-355
+      // CR-415: operating-hours + cancellation-reasons (Coming Soon) removed
+      { id: "employee-management", label: "Employee Management", path: "/employees" }, // CR-069
       { id: "dashboard-display", label: "Dashboard Display", path: "/visibility/status-config" },
       { id: "all-settings", label: "All Settings", path: "/settings" },
     ],
+  },
+  // CR-072/CR-078/CR-079 — Inventory Management
+  {
+    id: "inventory",
+    label: "Inventory",
+    icon: Package,
+    path: "/inventory-dashboard", // CR-435: direct nav — InventoryTabBar handles all sub-navigation
   },
   // CR-011 — Insights module (LAST in sidebar per CR-041)
   {
@@ -129,6 +145,8 @@ const sidebarMenuItems = [
       // Items group
       { id: "insights-items-group", label: "Sales Ledger", isGroup: true },
       { id: "insights-items", label: "Items Ledger", path: "/reports-module/items" },
+      { id: "insights-item-sales", label: "Item Sales", path: "/reports-module/item-sales" }, // CR-136
+      { id: "insights-var-addon", label: "Variation & Addon", path: "/reports-module/variation-addon-sales" }, // CR-136
       { id: "insights-order-ledger", label: "Orders Ledger", path: "/reports-module/order-ledger" },
       // Payments group
       { id: "insights-payments-group", label: "Payments", isGroup: true },
@@ -167,20 +185,61 @@ const sidebarMenuItems = [
       { id: "insights-customers-group", label: "Customers", isGroup: true },
       { id: "insights-customers-rfm", label: "Customer Intelligence", path: "/reports-module/customers-rfm" },
       { id: "insights-customers-mix", label: "Guest vs Registered", path: "/reports-module/customers-mix" },
+      { id: "insights-customers-intel-beta", label: "Customer Intelligence (Beta)", path: "/reports-module/customers-intel-beta" }, // CR-131
+      { id: "insights-customers-gvr-beta", label: "Guest vs Registered (Beta)", path: "/reports-module/customers-gvr-beta" }, // CR-131
       // Operations group
       { id: "insights-ops-group", label: "Operations", isGroup: true },
       { id: "insights-kitchen", label: "Kitchen Ops", path: "/reports-module/kitchen-ops" },
       { id: "insights-kot-variance", label: "KOT Variance", path: "/reports-module/kot-variance" },
       { id: "insights-room-orders", label: "Room Orders", path: "/reports-module/room-orders" },
       { id: "insights-food-court", label: "Food Court", path: "/reports-module/food-court" },
+      { id: "food-court-beta", label: "Food Court Beta", path: "/reports-module/food-court-beta" }, // CR-157
+      // CR-061: Expense Report — CR-415: insights duplicate removed (kept in Daily Report)
+    ],
+  },
+  // CR-135: Aggregator Setup
+  {
+    id: 'aggregator',
+    label: 'Aggregator',
+    icon: Link2,
+    children: [
+      { id: 'aggregator-setup', label: 'Aggregator Setup', path: '/aggregator/setup' },
+      // CR-415: food-mapping (Coming Soon) removed
+    ],
+  },
+  // CR-358-P1: Rooms & Reservations — hotel-only PMS module
+  // Placed after Aggregator. Section gated on features.room (OD-P1-01).
+  // All 9 routes added at once; P2-P5 screens show PmsPlaceholderPage until their phase ships.
+  // Sidebar touched ONCE — frozen after P1.
+  {
+    id: 'pms',
+    label: 'Rooms & Reservations',
+    icon: BedDouble,
+    children: [
+      // P1 — live screens
+      { id: 'pms-channel-manager', label: 'Channel Manager', path: '/pms/channel-manager' },
+      { id: 'pms-in-house',        label: 'In-House Guests', path: '/pms/in-house' },
+      // P2 placeholder
+      { id: 'pms-new-booking',     label: 'New Booking',     path: '/pms/new-booking' },
+      { id: 'pms-check-in',        label: 'Check-In',        path: '/pms/check-in' },
+      // P3 placeholder — CR-415: pms-front-desk legacy removed (superseded by Front Desk Beta)
+      { id: 'pms-arrivals',        label: 'Arrivals',         path: '/pms/arrivals' },
+      { id: 'pms-departures',      label: 'Departures',       path: '/pms/departures' },
+      // P4 placeholder
+      { id: 'pms-reservations',    label: 'Tape Chart',       path: '/pms/reservations' },
+      { id: 'pms-room-status',     label: 'Room Status',      path: '/pms/room-status' },
+      // CR-363 + CR-366 — SC ack approved 2026-09-14
+      { id: 'pms-night-audit',   label: 'Night Audit',        path: '/pms/night-audit' },
+      { id: 'pms-revenue',       label: 'Revenue Dashboard',  path: '/pms/revenue' },
+      { id: 'pms-front-desk-v2', label: 'Front Desk (Beta)',  path: '/pms/front-desk-v2' }, // CR-385 M0 OD-385-14
     ],
   },
 ];
 
 // Sidebar Component
 const Sidebar = ({ 
-  isExpanded, 
-  setIsExpanded, 
+  isExpanded: isExpandedProp, // BUG-555 B2
+  setIsExpanded: setIsExpandedProp, // BUG-555 B2
   // CR-041: onOpenSettings/Menu/Credit/Settlement removed (panel → route migration)
   onRefresh, 
   isRefreshing, 
@@ -199,7 +258,7 @@ const Sidebar = ({
   const { navRef, saveScroll } = useSidebarScroll(); // BUG-136
   const { toast } = useToast();
   const { user, logout: authLogout, hasPermission } = useAuth();
-  const { restaurant, clearRestaurant } = useRestaurant();
+  const { restaurant, clearRestaurant, restaurantTypeFlag } = useRestaurant();
   const { clearMenu } = useMenu();
   const { clearTables } = useTables();
   const { clearSettings } = useSettings();
@@ -208,6 +267,7 @@ const Sidebar = ({
 
   const [expandedSections, setExpandedSections] = useState({});
   const [activeItem, setActiveItem] = useState("dashboard");
+  const [isLoggingOut, setIsLoggingOut] = useState(false); // CR-124: disable button during API call
 
   // CR-052: Flyout state for collapsed sidebar
   const [flyoutItem, setFlyoutItem] = useState(null);
@@ -218,6 +278,25 @@ const Sidebar = ({
   // correct child (e.g. Insights → Dashboard) gets highlighted on page load
   // and after browser navigation — not just after an in-app click.
   const location = useLocation();
+  // BUG-555 WP-B: tablet (<1280) = 56px rail + slide-over drawer. Drawer state is LOCAL —
+  // never calls the page's setIsExpanded, so localStorage `mygenie_sidebar_expanded` (R8) is untouched.
+  const [isTablet, setIsTablet] = useState(() => window.matchMedia('(max-width: 1279px)').matches);
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  useEffect(() => {
+    const mq = window.matchMedia('(max-width: 1279px)');
+    const h = (e) => { setIsTablet(e.matches); setDrawerOpen(false); };
+    mq.addEventListener('change', h);
+    return () => mq.removeEventListener('change', h);
+  }, []);
+  useEffect(() => { setDrawerOpen(false); }, [location.pathname]);
+  useEffect(() => {
+    if (!drawerOpen) return;
+    const onKey = (e) => { if (e.key === 'Escape') setDrawerOpen(false); };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [drawerOpen]);
+  const isExpanded = isTablet ? true : isExpandedProp;
+  const setIsExpanded = isTablet ? (v) => { if (!v) setDrawerOpen(false); } : setIsExpandedProp;
   useEffect(() => {
     const path = location.pathname;
     // Walk visible menu to find a matching child path first (more specific)
@@ -232,6 +311,8 @@ const Sidebar = ({
         }
       }
     }
+    // CR-435: inventory section — no children after CR-435; match all /inventory-* sub-pages
+    if (path.startsWith('/inventory')) { setActiveItem('inventory'); return; }
     // Fallback: top-level item path match
     for (const item of sidebarMenuItems) {
       if (item.path && (path === item.path || path.startsWith(item.path + "/"))) {
@@ -241,11 +322,13 @@ const Sidebar = ({
     }
   }, [location.pathname]);
 
-  // CR-052: Close flyout on click outside
+  // CR-052: Close flyout on click outside (skip sidebar buttons — they handle their own toggle)
   useEffect(() => {
     if (!flyoutItem) return;
     const handler = (e) => {
       if (flyoutRef.current && !flyoutRef.current.contains(e.target)) {
+        // Don't close if clicking a sidebar nav button — let handleItemClick toggle instead
+        if (e.target.closest('[data-testid^="sidebar-"]')) return;
         setFlyoutItem(null);
       }
     };
@@ -267,11 +350,14 @@ const Sidebar = ({
   };
 
   // Only show these sidebar sections (hide the rest)
-  const VISIBLE_SECTIONS = new Set(['dashboard', 'day-closure', 'expenses', 'menu-management', 'credit', 'reports', 'settings', 'insights']); // CR-041, CR-059
+  const VISIBLE_SECTIONS = new Set(['dashboard', 'day-closure', 'expenses', 'menu-management', 'credit', 'reports', 'settings', 'inventory', 'insights', 'aggregator', 'pms']); // CR-041, CR-059, CR-072, CR-135, CR-358-P1
 
   // Filter menu items by visibility + permission
   const visibleMenuItems = sidebarMenuItems.filter((item) => {
     if (!VISIBLE_SECTIONS.has(item.id)) return false;
+    // CR-358-P1 OD-P1-01: PMS section — hotel-only (features.room gate).
+    // Future: replace features.room with dedicated features.pms when backend provides the key.
+    if (item.id === 'pms' && !restaurant?.features?.room) return false;
     const perm = SIDEBAR_PERMISSIONS[item.id];
     if (!perm) return true;
     return hasPermission(perm);
@@ -374,25 +460,70 @@ const Sidebar = ({
     showComingSoon(child.label);
   };
 
-  const handleLogout = () => {
-    // Clear ALL contexts — prevents mixed session state between account switches
-    clearInsightsCache();     // CR-044 R-8: clear report cache on logout
-    authLogout();
-    clearRestaurant();
-    clearMenu();
-    clearTables();
-    clearSettings();
-    clearOrders();
-    sessionStorage.clear();
-    localStorage.removeItem('auth_token');
-    localStorage.removeItem('remember_me');
-    navigate("/");
+  const handleLogout = async () => {
+    // CR-124: await API call; show toast and stay logged in on failure
+    setIsLoggingOut(true);
+    try {
+      clearInsightsCache(); // CR-044 R-8: clear report cache on logout
+      // CR-166 BUG2: CS admin in outlet → partial logout (keep COMMON_TOKEN, go to picker)
+      // Regular employee → full logout (clear everything, go to /)
+      if (getCommonToken()) {
+        await logoutFromOutlet();
+        clearRestaurant();
+        clearMenu();
+        clearTables();
+        clearSettings();
+        clearOrders();
+        sessionStorage.clear();
+        // CR-166 BUG2: Use hard redirect instead of React Router navigate.
+        // navigate('/restaurant-picker') races with ProtectedRoute's !isLoaded
+        // check (triggered by clearRestaurant) which redirects to /loading,
+        // where profileService.getProfile() returns 401 and the 401 interceptor
+        // hard-redirects to /. Hard redirect avoids the React re-render race.
+        window.location.href = '/restaurant-picker';
+      } else {
+        await authLogout(); // CR-124: async — awaits PaaS logout API + local clear
+        clearRestaurant();
+        clearMenu();
+        clearTables();
+        clearSettings();
+        clearOrders();
+        sessionStorage.clear();
+        navigate('/');
+      }
+    } catch (err) {
+      // CR-124: API failure — surface error; user stays logged in, can retry
+      toast({
+        title: "Logout Failed",
+        description: err.readableMessage || "Could not reach the server. Please try again.",
+        variant: "destructive",
+      });
+      setIsLoggingOut(false);
+    }
   };
 
   return (
+    <> {/* BUG-555 B5 */}
+    {isTablet && (
+      <div data-testid="sidebar-rail" className="w-14 h-screen sticky top-0 flex-shrink-0 flex flex-col items-center pt-3"
+           style={{ backgroundColor: COLORS.lightBg, borderRight: `1px solid ${COLORS.borderGray}` }}>
+        <button data-testid="sidebar-hamburger-btn" aria-label="Open menu" aria-expanded={drawerOpen}
+                onClick={() => setDrawerOpen(true)}
+                className="w-11 h-11 rounded-lg flex items-center justify-center hover:bg-gray-100 transition-colors">
+          <Menu className="w-5 h-5" style={{ color: COLORS.darkText }} />
+        </button>
+      </div>
+    )}
+    {isTablet && drawerOpen && (
+      <div data-testid="sidebar-drawer-backdrop" className="fixed inset-0 z-[90] bg-black/50 backdrop-blur-sm" onClick={() => setDrawerOpen(false)} />
+    )}
     <aside
-      data-testid="sidebar"
-      className="h-screen flex flex-col transition-all duration-300 flex-shrink-0 relative"
+      data-testid={isTablet ? "sidebar-drawer" : "sidebar"}
+      className={`${isTablet ? "h-[100dvh]" : "h-screen"} flex flex-col transition-all duration-300 flex-shrink-0 ${isTablet ? `fixed inset-y-0 left-0 z-[100] shadow-2xl ${drawerOpen ? "translate-x-0" : "-translate-x-full invisible"}` : "sticky top-0 z-20"}`}
+      role={isTablet ? "dialog" : undefined}
+      aria-modal={isTablet ? true : undefined}
+      aria-hidden={isTablet && !drawerOpen}
+      inert={isTablet && !drawerOpen ? true : undefined}
       style={{ 
         width: isExpanded ? "280px" : "70px",
         backgroundColor: COLORS.lightBg,
@@ -488,7 +619,7 @@ const Sidebar = ({
               )}
               {isExpanded && (
                 <span className="text-sm font-medium">
-                  {dashboardView === 'channel' ? 'By Channel' : 'By Status'}
+                  {dashboardView === 'channel' ? 'Channel View' : 'Status View'} {/* BUG-564 */}
                 </span>
               )}
             </button>
@@ -497,7 +628,7 @@ const Sidebar = ({
       )}
 
       {/* Menu Items */}
-      <nav ref={navRef} className="flex-1 overflow-y-auto py-4 min-h-0">
+      <nav ref={navRef} className="flex-1 overflow-y-auto py-4 min-h-0" style={!isTablet ? { maskImage: 'linear-gradient(to bottom, black calc(100% - 40px), transparent 100%)', WebkitMaskImage: 'linear-gradient(to bottom, black calc(100% - 40px), transparent 100%)' } : undefined}> {/* BUG-562 · BUG-568: maskImage desktop-only — tablet drawer shows all nav items */}
         {visibleMenuItems.map((item) => {
           const Icon = item.icon;
           const isActive = activeItem === item.id;
@@ -510,11 +641,10 @@ const Sidebar = ({
               <button
                 data-testid={`sidebar-${item.id}`}
                 onClick={(e) => {
-                  // CR-052: Capture button Y for flyout positioning
+                  // CR-052: Capture button Y for flyout positioning (fixed viewport coords for portal)
                   if (!isExpanded && hasChildren) {
                     const rect = e.currentTarget.getBoundingClientRect();
-                    const asideRect = e.currentTarget.closest('aside')?.getBoundingClientRect();
-                    setFlyoutTop(rect.top - (asideRect?.top || 0));
+                    setFlyoutTop(rect.top);
                   }
                   handleItemClick(item);
                 }}
@@ -555,7 +685,10 @@ const Sidebar = ({
                       );
                     }
                     // F-10: Feature-gate — hide items when restaurant lacks the feature
-                    if (child.featureGate && !restaurant?.features?.[child.featureGate]) return null;
+                    // CR-078 B13: 'restaurantTypeFlagged' case → show pill for franchise + master, hide for normal/undefined
+                    if (child.featureGate === 'restaurantTypeFlagged') {
+                      if (!(restaurantTypeFlag === 'franchise' || restaurantTypeFlag === 'master')) return null;
+                    } else if (child.featureGate && !restaurant?.features?.[child.featureGate]) return null;
                     const isChildActive = activeItem === child.id;
                     return (
                       <button
@@ -579,17 +712,17 @@ const Sidebar = ({
         })}
       </nav>
 
-      {/* CR-052: Flyout panel for collapsed sidebar */}
-      {flyoutItem && !isExpanded && (
+      {/* CR-052: Flyout panel for collapsed sidebar — rendered via portal to escape aside stacking context */}
+      {flyoutItem && !isExpanded && createPortal(
         <div
           ref={flyoutRef}
           data-testid="sidebar-flyout"
-          className="absolute bg-white rounded-xl shadow-2xl border z-[200] overflow-hidden"
+          className="fixed bg-white rounded-xl shadow-2xl border z-[200] overflow-hidden"
           style={{
             left: '70px',
-            top: flyoutTop,
+            top: Math.min(flyoutTop, window.innerHeight - 400),
             width: '240px',
-            maxHeight: '70vh',
+            maxHeight: `${Math.min(window.innerHeight - Math.min(flyoutTop, window.innerHeight - 400) - 8, window.innerHeight * 0.7)}px`,
             borderColor: COLORS.borderGray,
           }}
         >
@@ -601,7 +734,7 @@ const Sidebar = ({
               {flyoutItem.label}
             </span>
           </div>
-          <div className="overflow-y-auto" style={{ maxHeight: 'calc(70vh - 48px)' }}>
+          <div className="overflow-y-auto" style={{ maxHeight: `${Math.min(window.innerHeight - Math.min(flyoutTop, window.innerHeight - 400) - 56, window.innerHeight * 0.7 - 48)}px` }}>
             {flyoutItem.children.map((child) => {
               if (child.isGroup) {
                 return (
@@ -612,7 +745,10 @@ const Sidebar = ({
                   </div>
                 );
               }
-              if (child.featureGate && !restaurant?.features?.[child.featureGate]) return null;
+              // CR-078 B13: 'restaurantTypeFlagged' case → show pill for franchise + master
+              if (child.featureGate === 'restaurantTypeFlagged') {
+                if (!(restaurantTypeFlag === 'franchise' || restaurantTypeFlag === 'master')) return null;
+              } else if (child.featureGate && !restaurant?.features?.[child.featureGate]) return null;
               const isChildActive = activeItem === child.id;
               return (
                 <button
@@ -633,7 +769,8 @@ const Sidebar = ({
               );
             })}
           </div>
-        </div>
+        </div>,
+        document.body
       )}
 
       {/* Bottom Section - Ringer, Refresh, Profile & Logout */}
@@ -713,28 +850,52 @@ const Sidebar = ({
                   ? `${user.firstName} (${user.roleName || 'Staff'})`
                   : (user?.roleName || 'Staff')}
               </div>
-              <div className="text-xs" style={{ color: COLORS.grayText }}>
-                {restaurant?.id ? `#${restaurant.id}` : (user?.roleName || '')}
+              <div className="text-xs truncate" style={{ color: COLORS.grayText }}>
+                {restaurant?.id
+                  ? `${restaurant?.name ? `${restaurant.name} · ` : ''}#${restaurant.id}`
+                  : (user?.roleName || '')} {/* CR-378: show restaurant name alongside ID */}
               </div>
             </div>
           )}
         </button>
 
+        {/* CR-166: Switch Restaurant — visible only in CS/franchise admin session */}
+        {getCommonToken() && (
+          <button
+            data-testid="sidebar-switch-restaurant"
+            onClick={() => {
+              saveScroll();
+              navigate('/restaurant-picker');
+            }}
+            className={`w-full flex items-center gap-3 px-2 py-2.5 mb-1 hover:bg-blue-50 rounded-lg transition-colors ${
+              isExpanded ? 'justify-start' : 'justify-center'
+            }`}
+            style={{ color: '#3B82F6' }}
+            title={!isExpanded ? 'Switch Restaurant' : undefined}
+          >
+            <ArrowLeftRight className="w-5 h-5 flex-shrink-0" />
+            {isExpanded && <span className="text-sm font-medium">Switch Restaurant</span>}
+          </button>
+        )}
+
         {/* Logout */}
         <button
           data-testid="sidebar-logout"
           onClick={handleLogout}
-          className={`w-full flex items-center gap-3 px-2 py-2.5 mt-2 hover:bg-red-50 rounded-lg transition-colors ${
+          disabled={isLoggingOut}
+          className={`w-full flex items-center gap-3 px-2 py-2.5 mt-2 hover:bg-red-50 rounded-lg transition-colors disabled:opacity-60 ${
             isExpanded ? "justify-start" : "justify-center"
           }`}
           style={{ color: "#EF4444" }}
-          title={!isExpanded ? "Logout" : undefined}
+          title={!isExpanded ? (isLoggingOut ? "Logging out..." : "Logout") : undefined}
         >
           <LogOut className="w-5 h-5 flex-shrink-0" />
-          {isExpanded && <span className="text-sm font-medium">Logout</span>}
+          {isExpanded && <span className="text-sm font-medium">{isLoggingOut ? "Logging out..." : "Logout"}</span>}
         </button>
       </div>
     </aside>
+    {/* BUG-555 B6 */}
+    </>
   );
 };
 

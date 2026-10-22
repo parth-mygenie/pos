@@ -107,6 +107,7 @@ const PAYMENT_METHOD_OPTIONS = [
   { value: 'cash', label: 'Cash' },
   { value: 'card', label: 'Card' },
   { value: 'upi', label: 'UPI' },
+  { value: 'partial', label: 'Partial' },  // BUG-272: partial payment filter
 ];
 
 /**
@@ -206,6 +207,8 @@ const FilterBar = ({
   tabSettled = null,
   activeTab = '',
   hasPlatformData = false,
+  punchedByOptions = [],    // CR-101
+  collectedByOptions = [],  // CR-101
 }) => {
   const hasActiveFilters = Object.values(filters).some(v => v !== null && v !== undefined);
 
@@ -275,6 +278,26 @@ const FilterBar = ({
             placeholder="ALL"
             testId="filter-payment-gateway"
           />
+          {/* CR-101: Punched By filter */}
+          {punchedByOptions.length > 0 && (
+            <Select
+              value={filters.punchedBy}
+              options={punchedByOptions}
+              onChange={(val) => onFilterChange('punchedBy', val)}
+              placeholder="Punched By"
+              testId="filter-punched-by"
+            />
+          )}
+          {/* CR-101: Collected By filter */}
+          {collectedByOptions.length > 0 && (
+            <Select
+              value={filters.collectedBy}
+              options={collectedByOptions}
+              onChange={(val) => onFilterChange('collectedBy', val)}
+              placeholder="Collected By"
+              testId="filter-collected-by"
+            />
+          )}
           {hasActiveFilters && (
             <button
               onClick={onClearAll}

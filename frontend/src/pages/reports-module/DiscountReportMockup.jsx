@@ -34,7 +34,10 @@ const DiscountReportMockup = () => {
   const navigate = useNavigate();
   const { restaurant } = useRestaurant();
   const downloadRef = useRef(null);
-  const [isSidebarExpanded, setIsSidebarExpanded] = useState(false);
+  // BUG-361: persist sidebar state across reloads
+  const [isSidebarExpanded, setIsSidebarExpanded] = useState(
+    () => localStorage.getItem('mygenie_sidebar_expanded') === 'true'
+  );
   const [isSilentMode, setIsSilentMode] = useState(false);
   const today = new Date();
   const { sharedFrom, sharedTo, setSharedFrom, setSharedTo } = useInsightsCache();
@@ -69,7 +72,9 @@ const DiscountReportMockup = () => {
     const s = rawData.summary || {};
     const daily = (rawData.daily || []).map(d => ({ ...d, total: (d.manual||0)+(d.coupon||0)+(d.loyalty||0)+(d.comp||0) }));
     const byEmployee = rawData.by_employee || [];
-    return { summary: s, daily, byEmployee, total: s.total || 0 };
+    const ordersTable = rawData.orders_table || []; // BUG-329: per-order discount reasons
+    const byCategory = rawData.by_category || []; // BUG-580: custom discount categories
+    return { summary: s, daily, byEmployee, ordersTable, byCategory, total: s.total || 0 };
   }, [rawData]);
 
   const buildExportPayload = () => {
@@ -79,21 +84,22 @@ const DiscountReportMockup = () => {
       sheets: [
         { name: 'Daily', columns: [{ key: 'date', label: 'Date', format: 'text', align: 'left', width: 100 }, { key: 'manual', label: 'Manual', format: 'inr', align: 'right', width: 100 }, { key: 'coupon', label: 'Coupon', format: 'inr', align: 'right', width: 100 }, { key: 'loyalty', label: 'Loyalty', format: 'inr', align: 'right', width: 100 }, { key: 'comp', label: 'Comp', format: 'inr', align: 'right', width: 100 }, { key: 'total', label: 'Total', format: 'inr', align: 'right', width: 100 }], rows: analytics.daily, totals: { date: 'TOTAL', manual: analytics.summary.manual_discount, coupon: analytics.summary.coupon_discount, loyalty: analytics.summary.loyalty_discount, comp: analytics.summary.comp_total, total: analytics.total } },
         { name: 'By Employee', columns: [{ key: 'name', label: 'Employee', format: 'text', align: 'left', width: 150 }, { key: 'manual_discount', label: 'Manual Discount', format: 'inr', align: 'right', width: 120 }, { key: 'coupon_applied', label: 'Coupons Applied', format: 'integer', align: 'right', width: 100 }, { key: 'comp_count', label: 'Comp Count', format: 'integer', align: 'right', width: 100 }], rows: analytics.byEmployee },
+        ...(analytics.byCategory.length > 0 ? [{ name: 'By Category', columns: [{ key: 'discount_category', label: 'Category', format: 'text', align: 'left', width: 150 }, { key: 'manual', label: 'Manual', format: 'inr', align: 'right', width: 100 }, { key: 'coupon', label: 'Coupon', format: 'inr', align: 'right', width: 100 }, { key: 'loyalty', label: 'Loyalty', format: 'inr', align: 'right', width: 100 }, { key: 'comp', label: 'Comp', format: 'inr', align: 'right', width: 100 }, { key: 'total', label: 'Total', format: 'inr', align: 'right', width: 100 }], rows: analytics.byCategory }] : []),
       ] };
   };
   const handleDownloadAction = (action) => { let pw = null; if (action === 'pdf') pw = openReportWindow(); setShowDownloadMenu(false); if (['email','whatsapp','sms'].includes(action)) return; try { const p = buildExportPayload(); if (!p) return; if (action === 'excel') exportReportAsExcel(p); else if (action === 'pdf') exportReportAsPDF(pw, p); } catch(e) { console.error(e); if (pw && !pw.closed) pw.close(); } };
 
   return (
     <div className="flex h-screen bg-white font-sans" data-testid="s26-discount-report-page">
-      <Sidebar isExpanded={isSidebarExpanded} setIsExpanded={setIsSidebarExpanded} isSilentMode={isSilentMode} setIsSilentMode={setIsSilentMode} onOpenSettings={() => {}} onOpenMenu={() => {}} onOpenCredit={() => {}} onRefresh={fetchData} isRefreshing={isLoading} isOrderEntryOpen={false} />
+      <Sidebar isExpanded={isSidebarExpanded} setIsExpanded={(v) => { setIsSidebarExpanded(v); localStorage.setItem('mygenie_sidebar_expanded', String(v)); }} isSilentMode={isSilentMode} setIsSilentMode={setIsSilentMode} onOpenSettings={() => {}} onOpenMenu={() => {}} onOpenCredit={() => {}} onRefresh={fetchData} isRefreshing={isLoading} isOrderEntryOpen={false} />
       <div className="flex-1 flex overflow-hidden">
         <main className="flex-1 flex flex-col overflow-hidden bg-zinc-50">
-          <header className="flex items-center justify-between px-8 py-5 bg-white border-b border-zinc-200 shrink-0" data-testid="s26-header">
+          <header className="flex items-center justify-between px-8 py-5 bg-white border-b border-zinc-200 shrink-0 flex-wrap gap-y-3" data-testid="s26-header"> {/* BUG-555 */}
             <div className="flex items-center gap-4">
               <button className="p-2 hover:bg-zinc-100 rounded-lg" data-testid="s26-back-btn" onClick={() => navigate('/reports-module/dashboard')}><ArrowLeft className="w-5 h-5 text-zinc-600" /></button>
               <div><h1 className="text-2xl font-semibold tracking-tight text-zinc-950" style={{ fontFamily: "'Cabinet Grotesk', sans-serif" }}>Discount Report</h1><p className="text-[11px] text-zinc-500 mt-0.5">Manual, coupon, loyalty & complementary discounts{' · '}<button onClick={() => navigate('/reports-module/definitions')} className="text-emerald-700 hover:underline font-medium">ⓘ Definitions</button></p></div>
             </div>
-            <div className="flex items-center gap-3">
+            <div className="flex items-center gap-3 flex-wrap">
               <div className={`flex items-center gap-2 px-3 py-2 border ${draftDirty && draftValid ? 'border-[#F26B33]' : 'border-zinc-200'} bg-white rounded-lg`} data-testid="s26-daterange"><CalendarIcon className="w-4 h-4 text-zinc-500" /><label className="flex items-center gap-1.5 text-sm"><span className="text-xs text-zinc-400 uppercase">From</span><input type="date" value={fromDate} onChange={e => setFromDate(e.target.value)} disabled={isLoading} max={fmtISO(today)} className="bg-transparent border-0 outline-none text-sm font-medium text-zinc-800 cursor-pointer focus:ring-0 p-0" data-testid="s26-date-from" /></label><span className="text-zinc-300">—</span><label className="flex items-center gap-1.5 text-sm"><span className="text-xs text-zinc-400 uppercase">To</span><input type="date" value={toDate} onChange={e => setToDate(e.target.value)} disabled={isLoading} max={fmtISO(today)} className="bg-transparent border-0 outline-none text-sm font-medium text-zinc-800 cursor-pointer focus:ring-0 p-0" data-testid="s26-date-to" /></label></div>
               <button onClick={handleApply} disabled={isLoading||!canApply} className={`flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-medium ${canApply ? 'bg-[#329937] text-white shadow-sm' : 'bg-zinc-100 text-zinc-400 cursor-not-allowed'}`} data-testid="s26-apply-btn"><Check className="w-4 h-4" /> Apply</button>
               <div className="flex items-center gap-1 px-1.5 py-1 bg-zinc-100 rounded-lg" data-testid="s26-presets">{['7D','30D','MTD'].map(p => (<button key={p} disabled={isLoading} className={`px-2.5 py-1 text-xs font-medium rounded-md ${activePreset === p ? 'bg-white text-zinc-900 shadow-sm' : 'text-zinc-600 hover:bg-white/50'}`} onClick={() => handlePreset(p)}>{p}</button>))}</div>
@@ -124,6 +130,48 @@ const DiscountReportMockup = () => {
                   <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" horizontal={false} /><XAxis type="number" tick={{ fontSize: 10, fill: '#a1a1aa' }} tickLine={false} axisLine={false} tickFormatter={v => v >= 1000 ? `${(v/1000).toFixed(0)}k` : v} /><YAxis type="category" dataKey="name" tick={{ fontSize: 11, fill: '#52525b' }} tickLine={false} axisLine={false} width={100} /><ReTooltip /><Bar dataKey="manual_discount" radius={[0,6,6,0]} animationDuration={600}>{analytics.byEmployee.map((e,i) => <Cell key={e.name} fill={EMP_COLORS[i % EMP_COLORS.length]} />)}</Bar>
                 </BarChart></ResponsiveContainer>
               </div>)}
+              {/* BUG-580: Discount by Category */}
+              {analytics.byCategory.length > 0 && (
+                <div className="bg-white border border-zinc-200 rounded-xl overflow-hidden" data-testid="s26-category-table">
+                  <div className="px-6 py-4 border-b border-zinc-100">
+                    <h2 className="text-sm font-semibold text-zinc-700 uppercase tracking-wide">Discount by Category</h2>
+                  </div>
+                  <table className="w-full">
+                    <thead className="bg-zinc-50">
+                      <tr>
+                        <th className="px-6 py-3 text-left text-xs font-semibold text-zinc-500 uppercase">Category</th>
+                        <th className="px-4 py-3 text-right text-xs font-semibold text-zinc-500 uppercase">Manual</th>
+                        <th className="px-4 py-3 text-right text-xs font-semibold text-zinc-500 uppercase">Coupon</th>
+                        <th className="px-4 py-3 text-right text-xs font-semibold text-zinc-500 uppercase">Loyalty</th>
+                        <th className="px-4 py-3 text-right text-xs font-semibold text-zinc-500 uppercase">Comp</th>
+                        <th className="px-6 py-3 text-right text-xs font-semibold text-zinc-500 uppercase">Total</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {analytics.byCategory.map((cat, i) => (
+                        <tr key={cat.category_id || i} className="border-t border-zinc-50 hover:bg-zinc-50/50">
+                          <td className="px-6 py-3 text-sm font-medium text-zinc-800">{cat.discount_category}</td>
+                          <td className="px-4 py-3 text-sm text-right text-zinc-700">{fmtINR(cat.manual || 0)}</td>
+                          <td className="px-4 py-3 text-sm text-right text-zinc-600">{cat.coupon > 0 ? fmtINR(cat.coupon) : '—'}</td>
+                          <td className="px-4 py-3 text-sm text-right text-zinc-600">{cat.loyalty > 0 ? fmtINR(cat.loyalty) : '—'}</td>
+                          <td className="px-4 py-3 text-sm text-right text-zinc-600">{cat.comp > 0 ? fmtINR(cat.comp) : '—'}</td>
+                          <td className="px-6 py-3 text-sm text-right font-semibold text-zinc-900">{fmtINR(cat.total || 0)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                    <tfoot className="bg-zinc-50 border-t-2 border-zinc-200">
+                      <tr>
+                        <td className="px-6 py-3 text-sm font-bold">CATEGORY TOTAL</td>
+                        <td className="px-4 py-3 text-sm text-right font-bold">{fmtINR(analytics.byCategory.reduce((s, c) => s + (c.manual || 0), 0))}</td>
+                        <td className="px-4 py-3 text-sm text-right font-bold">{fmtINR(analytics.byCategory.reduce((s, c) => s + (c.coupon || 0), 0))}</td>
+                        <td className="px-4 py-3 text-sm text-right font-bold">{fmtINR(analytics.byCategory.reduce((s, c) => s + (c.loyalty || 0), 0))}</td>
+                        <td className="px-4 py-3 text-sm text-right font-bold">{fmtINR(analytics.byCategory.reduce((s, c) => s + (c.comp || 0), 0))}</td>
+                        <td className="px-6 py-3 text-sm text-right font-bold text-red-600">{fmtINR(analytics.byCategory.reduce((s, c) => s + (c.total || 0), 0))}</td>
+                      </tr>
+                    </tfoot>
+                  </table>
+                </div>
+              )}
               {/* Daily Table */}
               <div className="bg-white border border-zinc-200 rounded-xl overflow-hidden" data-testid="s26-daily-table">
                 <div className="px-6 py-4 border-b border-zinc-100"><h2 className="text-sm font-semibold text-zinc-700 uppercase tracking-wide">Daily Breakdown</h2></div>
@@ -131,6 +179,34 @@ const DiscountReportMockup = () => {
                 <tbody>{analytics.daily.map((d,i) => (<tr key={i} className="border-t border-zinc-50 hover:bg-zinc-50/50"><td className="px-6 py-3 text-sm font-medium text-zinc-800">{d.date}</td><td className="px-4 py-3 text-sm text-right text-zinc-700">{fmtINR(d.manual)}</td><td className="px-4 py-3 text-sm text-right text-zinc-600">{d.coupon > 0 ? fmtINR(d.coupon) : '—'}</td><td className="px-4 py-3 text-sm text-right text-zinc-600">{d.loyalty > 0 ? fmtINR(d.loyalty) : '—'}</td><td className="px-4 py-3 text-sm text-right text-zinc-600">{d.comp > 0 ? fmtINR(d.comp) : '—'}</td><td className="px-6 py-3 text-sm text-right font-semibold text-zinc-900">{fmtINR(d.total)}</td></tr>))}</tbody>
                 <tfoot className="bg-zinc-50 border-t-2 border-zinc-200"><tr><td className="px-6 py-3 text-sm font-bold">TOTAL</td><td className="px-4 py-3 text-sm text-right font-bold">{fmtINR(analytics.summary.manual_discount)}</td><td className="px-4 py-3 text-sm text-right font-bold">{fmtINR(analytics.summary.coupon_discount)}</td><td className="px-4 py-3 text-sm text-right font-bold">{fmtINR(analytics.summary.loyalty_discount)}</td><td className="px-4 py-3 text-sm text-right font-bold">{fmtINR(analytics.summary.comp_total)}</td><td className="px-6 py-3 text-sm text-right font-bold text-red-600">{fmtINR(analytics.total)}</td></tr></tfoot></table>
               </div>
+              {/* BUG-329: Discount Orders — per-order discount_for reason */}
+              {analytics.ordersTable.length > 0 && (
+                <div className="bg-white border border-zinc-200 rounded-xl overflow-hidden" data-testid="s26-orders-table">
+                  <div className="px-6 py-4 border-b border-zinc-100"><h2 className="text-sm font-semibold text-zinc-700 uppercase tracking-wide">Discount Orders</h2></div>
+                  <table className="w-full">
+                    <thead className="bg-zinc-50">
+                      <tr>
+                        <th className="px-6 py-3 text-left text-xs font-semibold text-zinc-500 uppercase">Order #</th>
+                        <th className="px-4 py-3 text-left text-xs font-semibold text-zinc-500 uppercase">Date</th>
+                        <th className="px-4 py-3 text-left text-xs font-semibold text-zinc-500 uppercase">Reason</th>
+                        <th className="px-4 py-3 text-right text-xs font-semibold text-zinc-500 uppercase">Discount</th>
+                        <th className="px-6 py-3 text-right text-xs font-semibold text-zinc-500 uppercase">Total</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {analytics.ordersTable.map((row, i) => (
+                        <tr key={i} className="border-t border-zinc-50 hover:bg-zinc-50/50">
+                          <td className="px-6 py-3 text-sm font-medium text-zinc-800">#{row.restaurant_order_id || row.order_id || '—'}</td>
+                          <td className="px-4 py-3 text-sm text-zinc-600">{row.order_date || (row.collect_bill ? row.collect_bill.split(' ')[0] : '—')}</td>
+                          <td className="px-4 py-3 text-sm text-zinc-700">{row.discount_category || row.discount_for || '—'}</td>
+                          <td className="px-4 py-3 text-sm text-right text-zinc-700">{fmtINR(row.order_discount || 0)}</td>
+                          <td className="px-6 py-3 text-sm text-right font-semibold text-zinc-900">{fmtINR(row.total_discount || 0)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
             </div>)}</div>
           </ReportLoadingShield>
         </main>

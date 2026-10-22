@@ -72,7 +72,10 @@ const ChannelPivotMockup = () => {
   const navigate = useNavigate();
   const { restaurant } = useRestaurant();
   const downloadRef = useRef(null);
-  const [isSidebarExpanded, setIsSidebarExpanded] = useState(false);
+  // BUG-361: persist sidebar state across reloads
+  const [isSidebarExpanded, setIsSidebarExpanded] = useState(
+    () => localStorage.getItem('mygenie_sidebar_expanded') === 'true'
+  );
   const [isSilentMode, setIsSilentMode] = useState(false);
 
   const today = new Date();
@@ -195,10 +198,10 @@ const ChannelPivotMockup = () => {
 
   return (
     <div className="flex h-screen bg-white font-sans" data-testid="s14-channel-pivot-page">
-      <Sidebar isExpanded={isSidebarExpanded} setIsExpanded={setIsSidebarExpanded} isSilentMode={isSilentMode} setIsSilentMode={setIsSilentMode} onOpenSettings={() => {}} onOpenMenu={() => {}} onOpenCredit={() => {}} onRefresh={fetchData} isRefreshing={isLoading} isOrderEntryOpen={false} />
+      <Sidebar isExpanded={isSidebarExpanded} setIsExpanded={(v) => { setIsSidebarExpanded(v); localStorage.setItem('mygenie_sidebar_expanded', String(v)); }} isSilentMode={isSilentMode} setIsSilentMode={setIsSilentMode} onOpenSettings={() => {}} onOpenMenu={() => {}} onOpenCredit={() => {}} onRefresh={fetchData} isRefreshing={isLoading} isOrderEntryOpen={false} />
       <div className="flex-1 flex overflow-hidden">
         <main className="flex-1 flex flex-col overflow-hidden bg-zinc-50">
-          <header className="flex items-center justify-between px-8 py-5 bg-white border-b border-zinc-200 shrink-0" data-testid="s14-header">
+          <header className="flex items-center justify-between px-8 py-5 bg-white border-b border-zinc-200 shrink-0 flex-wrap gap-y-3" data-testid="s14-header"> {/* BUG-555 */}
             <div className="flex items-center gap-4">
               <button className="p-2 hover:bg-zinc-100 rounded-lg" data-testid="s14-back-btn" onClick={() => navigate('/reports-module/sales')}><ArrowLeft className="w-5 h-5 text-zinc-600" /></button>
               <div>
@@ -206,7 +209,7 @@ const ChannelPivotMockup = () => {
                 <p className="text-[11px] text-zinc-500 mt-0.5">Revenue breakdown by order channel × payment method{' · '}<button onClick={() => navigate('/reports-module/definitions')} className="text-emerald-700 hover:underline font-medium" data-testid="s14-definitions-link">ⓘ Definitions</button></p>
               </div>
             </div>
-            <div className="flex items-center gap-3">
+            <div className="flex items-center gap-3 flex-wrap">
               <div className={`flex items-center gap-2 px-3 py-2 border ${draftDirty && draftValid ? 'border-[#F26B33]' : 'border-zinc-200'} bg-white rounded-lg`} data-testid="s14-daterange">
                 <CalendarIcon className="w-4 h-4 text-zinc-500" />
                 <label className="flex items-center gap-1.5 text-sm text-zinc-600"><span className="text-xs text-zinc-400 uppercase">From</span><input type="date" value={fromDate} onChange={(e) => setFromDate(e.target.value)} disabled={isLoading} max={fmtISO(today)} className="bg-transparent border-0 outline-none text-sm font-medium text-zinc-800 cursor-pointer focus:ring-0 p-0" data-testid="s14-date-from" /></label>

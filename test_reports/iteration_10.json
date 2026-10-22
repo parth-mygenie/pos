@@ -1,99 +1,36 @@
 {
-  "summary": "BUG-168 display fix verified: Fixed critical scoping bug where getAddonText() and hasAddons() helper functions were incorrectly nested inside generateTimeSlots(). Moved helpers to module level. All 33 tests pass (19 new display tests + 14 existing API payload tests). Frontend loads correctly and cart panel displays addons.",
+  "summary": "BUG-538 E2E test on e1c7f05f deployment. Cashier login now works. CPP opened correctly via Order Entry → Collect Bill. FAIL: discount-section IS PRESENT for cashier even though roleBaseDiscount=Yes is set on backend. Root cause identified: profileTransform.js settings() function is missing `roleBaseDiscount` field, so restaurantSettings.roleBaseDiscount is always undefined in CPP → discountAllowed = !undefined || canDiscount = true → discount always shown.",
   "backend_issues": {
     "critical": [],
     "minor": []
   },
   "frontend_issues": {
-    "ui_bugs": [],
+    "ui_bugs": [
+      {
+        "component": "CollectPaymentPanel / profileTransform",
+        "issue": "discount-section IS visible to cashier (role without discount permission) even when roleBaseDiscount=Yes. Root cause: profileTransform.js settings() function does NOT include `roleBaseDiscount` field, so restaurantSettings.roleBaseDiscount is always undefined in CPP. The CPP fix code (L89) is correct but never activates because the gate value is never set.",
+        "selector": "[data-testid='discount-section']",
+        "priority": "CRITICAL"
+      }
+    ],
     "integration_issues": [],
     "design_issues": []
   },
-  "test_report_links": [
-    "/app/frontend/src/__tests__/components/CartPanelAddonDisplay.test.js",
-    "/app/frontend/src/__tests__/api/transforms/orderTransformAddOnQtys.test.js"
+  "test_report_links": ["/app/test_reports/iteration_10.json"],
+  "action_items": [
+    "Fix: Add `roleBaseDiscount: toBoolean(apiSettings.settings?.role_base_discount ?? apiSettings.role_base_discount)` to the `settings` function in /app/frontend/src/api/transforms/profileTransform.js (around line 423, before closing brace). This will make restaurantSettings.roleBaseDiscount=true for kunafamahal, activating the BUG-538 gate in CPP.",
+    "After fix: Re-test cashier CPP — discount-section should be ABSENT. Owner CPP — discount-section present + Apply button visible."
   ],
-  "action_items": [],
   "critical_code_review_comments": [
-    "FIXED: getAddonText() and hasAddons() were incorrectly nested inside generateTimeSlots() function (lines 9-26 were inside the function body starting at line 9). This caused 'not defined' errors at lines 95, 99, 236, 240.",
-    "FIX APPLIED: Moved both helper functions to module level (lines 8-23) before generateTimeSlots() definition",
-    "Line 15: getAddonText correctly computes total addon qty as (a.quantity || a.qty || 1) * itemQty",
-    "Line 22: hasAddons checks all three addon data sources (selectedAddons, addOns, customizations.addons)",
-    "Lines 95-99: PlacedItemRow uses helpers for placed items display",
-    "Lines 236-240: NewItemRow uses helpers for unplaced items display",
-    "ItemCustomizationModal (Line 251) correctly shows per-unit qty in selector UI - NOT changed per requirements"
+    "profileTransform.js settings() (L341-424): Missing `roleBaseDiscount: toBoolean(apiSettings.settings?.role_base_discount ?? apiSettings.role_base_discount)`. All other settings fields that live in `restaurants[0].settings.*` use the dual-path pattern (settings-nested first, root fallback). Same fix needed here.",
+    "CollectPaymentPanel.jsx L89-90: Code logic is correct. discountAllowed = !restaurantSettings?.roleBaseDiscount || canDiscount. showApplyButton = !!roleBaseDiscount && canDiscount && !!orderId. These are sound — just gated on the missing transform field.",
+    "Note: Apply button is NOT present for cashier (correct), NOT present for owner either (owner CPP not tested yet, but showApplyButton requires roleBaseDiscount=true which is also never set)"
   ],
-  "updated_files": [
-    "/app/frontend/src/components/order-entry/CartPanel.jsx",
-    "/app/frontend/src/__tests__/components/CartPanelAddonDisplay.test.js"
-  ],
-  "success_rate": {
-    "backend": "N/A",
-    "frontend": "100%"
-  },
-  "test_credentials": "owner@mantri.com / Qplazm@10",
+  "updated_files": [],
+  "success_rate": {"backend": "N/A", "frontend": "20%"},
   "seed_data_creation": "",
-  "retest_needed": false,
-  "should_main_agent_self_test": false,
-  "context_for_next_testing_agent": "BUG-168 display fix complete. The original code had a critical scoping bug where the helper functions were accidentally placed inside generateTimeSlots() function body. This was fixed by moving them to module level. The API payload fix (add_on_qtys multiplication at orderTransform.js:698) from iteration 9 remains intact.",
-  "test_results": {
-    "unit_tests": {
-      "CartPanelAddonDisplay.test.js": {
-        "total": 19,
-        "passed": 19,
-        "failed": 0,
-        "tests": [
-          "owner scenario: item qty=3, addon qty=1 per unit → displays 'milk x3'",
-          "item qty=1, addon qty=1 → displays 'milk x1' (no change for single items)",
-          "multiple addons: item qty=3, milk x1 and honey x2 per unit → displays 'milk x3, honey x6'",
-          "uses addOns array when selectedAddons is not present",
-          "falls back to customizations.addons when no structured data",
-          "returns empty string when no addons",
-          "filters out addons without name",
-          "defaults addon quantity to 1 when not specified",
-          "defaults item qty to 1 when not specified",
-          "handles large quantities correctly",
-          "hasAddons: returns true when selectedAddons has items",
-          "hasAddons: returns true when addOns has items",
-          "hasAddons: returns true when customizations.addons has items",
-          "hasAddons: returns false when no addon data",
-          "hasAddons: returns false when addon arrays are empty",
-          "hasAddons: returns false when addon properties are undefined",
-          "Integration: new item added to cart with addons (unplaced)",
-          "Integration: placed item from socket with addOns array",
-          "Integration: item with only static customizations (legacy data)"
-        ]
-      },
-      "orderTransformAddOnQtys.test.js": {
-        "total": 14,
-        "passed": 14,
-        "failed": 0,
-        "note": "BUG-168 API payload tests - regression check passed"
-      }
-    },
-    "lint_check": {
-      "status": "PASS",
-      "file": "/app/frontend/src/components/order-entry/CartPanel.jsx",
-      "issues": 0
-    },
-    "frontend_load": {
-      "status": "PASS",
-      "login_page_renders": true,
-      "dashboard_loads": true,
-      "order_entry_loads": true,
-      "cart_panel_displays_addons": true
-    }
-  },
-  "bug_168_display_fix": {
-    "issue": "Helper functions getAddonText() and hasAddons() were nested inside generateTimeSlots() function, causing 'not defined' errors",
-    "fix_location": "Lines 8-23 in /app/frontend/src/components/order-entry/CartPanel.jsx",
-    "before_fix": "Functions were inside generateTimeSlots() body (lines 11-26 inside function starting at line 9)",
-    "after_fix": "Functions moved to module level before generateTimeSlots() definition",
-    "display_locations_fixed": [
-      "Line 95-99: PlacedItemRow (placed items view)",
-      "Line 236-240: NewItemRow (active items view)"
-    ],
-    "popup_unchanged": "ItemCustomizationModal.jsx Line 251 still shows per-unit qty (correct for selector UI)",
-    "verified": true
-  }
+  "retest_needed": true,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "CRITICAL BUG FOUND: profileTransform.js settings() function is missing roleBaseDiscount field. Fix: add `roleBaseDiscount: toBoolean(apiSettings.settings?.role_base_discount ?? apiSettings.role_base_discount)` to the return object in profileTransform.js settings() function. After fix, test: (1) cashier CPP - discount-section absent, (2) owner CPP - discount-section present + Apply button visible. Cashier login NOW works with Qplazm@10. Navigation: click card text (e.g. 'Sachu') to open OrderEntry, then click 'Collect Bill' button at bottom right.",
+  "rca_of_issue": "BUG-538 fix in CollectPaymentPanel.jsx (L89) is correct but ineffective because the gate value `restaurantSettings.roleBaseDiscount` is always undefined. The profile API returns `role_base_discount: 'Yes'` for kunafamahal in `restaurants[0].settings.role_base_discount`, but profileTransform.js settings() function (L341-424) never maps this field to the `roleBaseDiscount` camelCase key. Therefore CPP always sees `restaurantSettings.roleBaseDiscount = undefined`, making `discountAllowed = !undefined || false = true` for ALL users regardless of role. Fix: add the missing mapping to profileTransform.js."
 }

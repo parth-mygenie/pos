@@ -67,9 +67,10 @@ describe('CR-029 G1 | round_up persistence on BILL_PAYMENT', () => {
     expect(p.round_up).toBe(0);
   });
 
-  test('negative roundOff clamps to 0 (defensive — Math.ceil never produces negative)', () => {
+  // CR-170: Math.max(0,...) clamp removed — floor cases produce negative round_up
+  test('negative roundOff passes through as negative (CR-170: floor case allowed)', () => {
     const p = mkBillPayload({ finalTotal: 100, roundOff: -0.3 });
-    expect(p.round_up).toBe(0);
+    expect(p.round_up).toBe(-0.3); // was 0 before CR-170; now negative is valid
   });
 
   test('round_up rounds to 2 decimals (paise precision)', () => {

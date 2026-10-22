@@ -1,7 +1,13 @@
 # Layer 6 — Sprint Status Board
 
+**CR-390 current Step 2 (2026-09-28): OD-390-25 LOCKED FOR PLANNING**, owner accepts option 3b/read-only discovery first. **Gate 3 OPEN / OWNER REVIEW; no Gate 4 GO**, no live access or discovery authorized. Current handover: `handover/SESSION_HANDOVER_2026_09_28_CR390_OPTION3B_ACCEPTED_PRESENTATION.md`; next agent presents both sessions/current position/remaining P3B-1…4 approvals and waits. OD-390-23/24 and menu/video choices remain locked. Plan/annex unchanged in implementation scope; no code, original assets, capture, live or data changes. Parent milestone/sprint unchanged.
+
+> **Historical Step 1 decision notice, superseded for stage dispatch:**
+
+> **CR-390 update 2026-09-28:** Step 1 complete; **OD-390-16…22 LOCKED FOR PLANNING**. Palm House Normal for standard MM; Kunafa Mahal Aggregator; Palm House Premium only for switching/comparison. No Party setup. Await separate Step 2 instruction; **Gate 3 NOT STARTED; no new Gate 4 GO**. Risk CRITICAL/code reality PARTIAL; parent Gate 5A and `modules_pdf` retained. Baseline 34 blocked/36 partial unchanged, none externally accepted. See `impact/CR-390_MM_FAQ_COVERAGE_GATE2_2026_09_28.md` §7. Prior notices remain historical; no code/capture/data changes.
+
 **Status:** POPULATED
-**Last Updated:** 2026-06-15 (CR-047 AGENT_PROMPT_ALPHA v0.6 CLOSED — OWNER VERIFIED; POS 4.0 remains FROZEN)
+**Last Updated:** 2026-09-24 (sep_bug_closure — **COMBINED WAVE 1+2 QA CONDITIONAL PASS (Gate 5B)**: automated 8/8 PASS, browser E2E 12 BLOCKED (external CORS), 7 NOT COVERABLE, 0 BLOCKER/MAJOR; BUG-452 `GATE_5B_QA_CONDITIONAL_PASS`; report `test_reports/QA_REPORT_SEP_BUG_CLOSURE_WAVE1_WAVE2_COMBINED_2026_09_24.md`; **next = Gate 6 Owner Smoke on direct-access device**) · **WAVE 2 BUG-452 IMPLEMENTED Gate 5A** (owner "gate 4 go", VD-8 Option C; `handover/SESSION_HANDOVER_2026_09_24_SEP_BUG_CLOSURE_WAVE2_IMPLEMENTED.md`) · **WAVE 1 QA DEFERRED → folded into combined run** · **WAVE 1 IMPLEMENTED Gate 5A** (commit `3783ee8`, testing_agent iteration_1 PASS) · 2026-02 (Gate 3 CLOSED, B0 PASS) · Prior: 2026-09-24 (Gate 2 CLOSED) · (pos_pms_2 — CR-385 P5 regression PASSED 2026-09-24 — awaiting owner sign-off) · 2026-06-15 (CR-047 CLOSED — OWNER VERIFIED; POS 4.0 remains FROZEN)
 
 ---
 
@@ -274,6 +280,7 @@
 | 2026-06-04 | FE-61 GST NOT CONFIGURED exemption policy APPROVED | "we can mark them that till 1st gst was not added make an exception under a new policy and move them from this list and mark them green in audit" | FE-61 added to manifest (APPROVED), insightsService.js tags May-22 items as GST_NOT_CONFIGURED, S5 Audit tab renders them in green exempt block |
 | 2026-06-04 | FE-58 cancelled drift false-positive FIX | Owner confirmed backend correctly reverted cancelled item tax to ₹0. Agent verified 2 sample orders (#012372, #012162): all 83 cancelled lines have gst_tax_amount=₹0 | Skipped cancelled items from FE-58 drift collector (1-line fix: `if (!isCancelled)`) |
 | 2026-06-04 | S5 Audit 3-block classification SHIPPED | Investigation: 111 orders → 3 root causes: OVER TAXED (split bug, 11), TAX NOT COMPUTED (backend bug, 4), GST NOT CONFIGURED (exempt, 36). Net actionable: 15 orders | Replaced single "Last Seen Ambiguity" table with 3 classified blocks with badges |
+| 2026-09-28 | **OD-390-15 LOCKED — option (a), MM video-first with optional annotated reference PDF** | "a update docs and decsion do not start step 1" | Documentation/decision update only. Clean PNGs feed videos; explanations/scripts/mappings remain separate. Optional PDF is not a frame source; existing video overlays and original nine-module PDF scope unchanged. **Step 1 NOT STARTED.** No capture/code/preprod/artifact generation; no gate advancement. External validation of all 70 FAQs still required before storyboards/video. |
 
 || 2026-06-05 | **S5 Re-open: 6 business rules locked + implemented** | Owner "lock it" — All Items tab, Punched Date default, bucket grouping, ₹0 revenue for Cancelled/Comp, within-bucket sort, tab counts | All 6 rules shipped in ItemSalesHybridMockup.jsx |
 || 2026-06-05 | **Tab reorder + renames** | Owner directive: "All / Sold / Cancelled / Complimentary / Pending / Top / Slow" + remove "Items" and "Lines" from labels | TABS array reordered + renamed |
@@ -289,3 +296,51 @@
 || 2026-06-05 | **Production cleanup** | "remove all these messages coming soon etc just keep them disabled" | Dev messages, badges, footer text removed |
 || 2026-06-05 | **S5 FROZEN** | "I think we are good to freeze screen for item sales" | CR_011_SCREEN_FREEZE_LOG.md → S5 ✅ FROZEN |
 || 2026-06-05 | **Route swap** | S5 replaces S2 at `/reports-module/items` | App.js updated || 2026-06-11 | **POS 4.0 PRE-FREEZE CONSOLIDATION + OWNER RULINGS R1–R5.** Full doc⇄code reconciliation (code = truth, 23 items validated, 21 VERIFIED, 0 code defects). Owner rulings: **R1** CR-021 smoke covered both flows → CLOSED. **R2** CR-023 smoke done → CLOSED. **R3** renumbering approved — Toast CR→**CR-027**, 401-redirect bug→**BUG-123**, socket-payload bug→**BUG-124**. **R4** Session-3 fixes retro-registered as **CR-026 Report Data & Rounding Sweep**. **R5** BUG-112/113/114 → formal smoke batch. Registers synced (CR_REGISTRY +10 rows, BUG_TRACKER, CONTROL_DASHBOARD, OWNER_DECISION_QUEUE Cat-G 68/2/0 from auditManifest, ENV_REGISTRY new pod). **Freeze now blocked ONLY on smoke batch S-1…S-9 (`POS4_0_OWNER_SMOKE_BATCH_2026_06_11.md`) + DEBUG-B11 log removal.** Reports: `POS4_0_BASELINE_CONSOLIDATION_REPORT_2026_06_11.md`. | Owner rulings R1–R5, 2026-06-11 |
+
+---
+
+## POS 5.1 — Active Sprint (2026-08-07 →)
+
+| Item | Status | Notes |
+|---|---|---|
+| **CR-138** Dual Excel — CR-136 Amendment | **INTAKE — Gate 1** | P2 · LOW risk · 4 files (0 hotspot) · ~33 lines. Backend endpoint confirmed live. Owner: keep both FE + server Excel. ⚠ Backend static filename must be fixed before prod. Intake: `change_requests/CR-138_DUAL_EXCEL_DOWNLOAD_CR136_AMENDMENT_INTAKE.md` |
+| **CR-137** Optional `discount_for` Field | **QA PASS — Gate 5b ✅ Awaiting owner smoke (Gate 6)** | 35/35 P0 PASS · 4/4 files covered · 0 blockers. QA report: `test_reports/QA_REPORT_CR137_2026_08_12.md` |
+| **CR-133** Printer Agent Config | **IMPLEMENTED — QA PASS** | 4-tab screen; 20/20 unit tests; EXIT GATE 5/5. **Awaiting owner Gate-5 smoke** (owner@18march.com, restaurant 478). |
+| CR-133 backend: printer DELETE | **OPEN — backend** | Preprod deep-merges printers[] by id. Frontend reconciliation toast shipped. Needs backend fix + DB cleanup of `printer_new_1786121623349` on 478. |
+| CR-133 Amendment (D1-D7, U1-U4) | **PENDING — owner + backend** | 7 duplicate fields + 4 migration fields need confirmation. Doc: `handover/CR133_AMENDMENT_SETTINGS_INTEGRATION_2026_08_09.md` |
+| OD-10 (CR-133) | **PENDING OWNER** | Preview (OD-9 revisit) + Test Print (Phase 2). Do NOT start until owner answers. |
+| **CR-132** Restaurant Settings Wizard | **GATE 2 COMPLETE — DESIGN REVIEW IN PROGRESS** | IA revised: 42 fields (was 49 — 7 moved to CR-135), 1 regression fix. 8 screens (Screen 7 Aggregator removed → CR-135). Comparison pages S1-S9 + print built. Awaiting owner cumulative feedback S3-S9. Gate 3 blocked on: owner feedback + CR-133 ODs D1-D4 + OD-GST-INCEXC. |
+| **CR-135** Aggregator Setup | **GATE 2 COMPLETE — DESIGN OWNER APPROVED** | 2-tab page: Config (per-brand, view/edit toggle per section) + Operational Settings (restaurant-wide, 7 flags). 7 endpoints (aggregator-config group only; sync → Menu Management). Multi-brand selector. swiggi_code typo locked. Design mockup: `/aggregator-preview`. **Next: Gate 3 Implementation Plan.** |
+| CR-132 Screen 2 (Printer embed) | **ON HOLD** | Deferred to CR-133 amendment resolution. |
+| **CR-134** Settings Tiles Mirror | **ON HOLD** | Depends on CR-132 completion. |
+
+### CR-132 Comparison Pages (public, no auth required)
+`/screen1-compare` → `/screen3-compare` → `/screen4-compare` → `/screen5-compare` → `/screen6-compare` → `/screen7-compare` → `/screen8-compare` → `/screen9-compare` → `/cr132-print` (printable PDF)
+
+### Key Handover Docs
+- CR-133 QA: `handover/QA_HANDOVER_2026_08_07_CR133.md`
+- CR-132 IA (revised): `impact/CR-132_IMPACT_ANALYSIS.md`
+- CR-132 S1 review: `handover/SESSION_HANDOVER_2026_08_09_CR132_DESIGN_REVIEW.md`
+- CR-132 comparison pages: `handover/SESSION_HANDOVER_2026_08_09_CR132_COMPARISON_PAGES.md`
+- CR-133 amendment: `handover/CR133_AMENDMENT_SETTINGS_INTEGRATION_2026_08_09.md`
+
+---
+
+## sep_bug_closure — Sept bug closure (BUG-451 · BUG-452 · BUG-453 · CR-386) — COMBINED WAVE 1+2 QA CONDITIONAL PASS 2026-09-24 (Gate 5B) · Gate 6 Owner Smoke next
+
+| Item | Status |
+|---|---|
+| **BUG-451** | **GATE 5B QA CONDITIONAL PASS 2026-09-24** — automated PASS (iteration_1 + VC checks); VC-4 owner manual Gate 6; VC-5 NOT COVERABLE (testid gap) |
+| **BUG-452** | **GATE 5B QA CONDITIONAL PASS 2026-09-24** — automated 8/8 PASS (VD-5/6/7/8/10/12/13/14); browser E2E 6 BLOCKED (external CORS VD-1/2/3/4/9/11/16); 1 PARTIAL (VD-17); 0 BLOCKER/MAJOR. Registry updated. All logic verified via unit + code review |
+| **BUG-453** | **GATE 5B QA CONDITIONAL PASS 2026-09-24** — automated PASS (unit 4/4, iteration_1); VB-4/5/6/8 NOT COVERABLE (real-order); VB-7a/9 BLOCKED (external CORS) |
+| **CR-386** | **GATE 5B QA CONDITIONAL PASS 2026-09-24** — automated PASS (manifest/PNG 200, iteration_1); VA-3/4/5 owner manual Gate 6 |
+| Gate 5B | **COMBINED WAVE 1+2 QA CONDITIONAL PASS 2026-09-24** — Grand total: 46 cases = 25 PASS + 12 BLOCKED (external CORS) + 7 NOT COVERABLE + 1 PARTIAL + 1 NOTE. 0 BLOCKER, 0 MAJOR, 0 MINOR. Report: `test_reports/QA_REPORT_SEP_BUG_CLOSURE_WAVE1_WAVE2_COMBINED_2026_09_24.md`. Testing agent: `iteration_3.json`. **Next: Gate 6 Owner Smoke on direct-access device.** |
+
+## pos_pms_2 — PMS Front Desk (CR-385) — Gate 5 closing
+
+| Item | Status |
+|---|---|
+| **CR-385** | **CR-385 P5 regression PASSED 2026-09-24 — awaiting owner sign-off** (Role 4 `test_reports/QA_REPORT_2026_09_24_CR385_P5_ROLE4.md` 34/34 PASS; guards 6/6; zero code changes). Final line is written in §5.8 only after the owner’s verbatim words: "CR-385 CLOSED <date> — Gate 5 closed; FU-385-C: <owner words>; FU-385-D: <owner words>". |
+| FU-385-C | PLANNED — separate CR after CR-385 closes (owner 2026-09-23 verbatim on record in CR_REGISTRY) |
+| FU-385-D | PLANNED — separate follow-up CR; D88 stays; OG-PMS-048 OPEN pending FU-385-D |
+

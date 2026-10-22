@@ -238,9 +238,15 @@ const CustomerModal = ({ onClose, onSave, initialData = null, restaurantId = '',
 
   // CR-002: Defensive filter — exclude cart items from suggestions
   const filteredCrossSell = intel?.crossSellItems?.filter(xs => {
+    if (!menuItems.some(f => String(f.id) === String(xs.itemId))) return false; // CR-376-FU-A: hide off-menu suggestions
     // menuItems passed from OrderEntry already have cart context
     return true; // server already filters; keeping for structural completeness
   }) || [];
+
+  // CR-376-FU-A: filter Past Favourites to only items in the active menu
+  const filteredTopItems = intel?.orderPatterns?.topItems?.filter(item =>
+    menuItems.some(f => String(f.id) === String(item.itemId))
+  ) || [];
 
   // CR-002: Collapsible state for edit form in existing-customer mode
   const [editFormOpen, setEditFormOpen] = useState(false);
@@ -281,12 +287,17 @@ const CustomerModal = ({ onClose, onSave, initialData = null, restaurantId = '',
 
       if (customerId && !customerId.startsWith('CUST-')) {
         // Existing CRM customer — update
-        await updateCustomer(customerId, {
-          name: name.trim(),
-          phone: phone.trim(),
-          dob: birthday || undefined,
-          anniversary: anniversary || undefined,
-        }, restaurantId);
+        // BUG-294: non-blocking CRM update (matching BUG-092 pattern in RoomCheckInModal)
+        try {
+          await updateCustomer(customerId, {
+            name: name.trim(),
+            phone: phone.trim(),
+            dob: birthday || undefined,
+            anniversary: anniversary || undefined,
+          }, restaurantId);
+        } catch (crmErr) {
+          console.warn('[CustomerModal] BUG-294: CRM update failed, proceeding without sync:', crmErr);
+        }
         // BUG-108 Loyalty Pipeline Fix: existing CRM customer selected via
         // the member-search typeahead carries loyalty fields on initialData /
         // the upstream search result. Use those directly when
@@ -316,7 +327,9 @@ const CustomerModal = ({ onClose, onSave, initialData = null, restaurantId = '',
             });
             // existing stays null — fall through to "Truly new customer" create path below
           } else {
-            throw lookupErr; // Re-throw unexpected errors to outer catch at L113
+            // BUG-294: non-blocking — 401/5xx CRM errors are non-fatal (matching BUG-092)
+            console.warn('[CustomerModal] BUG-294: CRM lookup failed, proceeding:', lookupErr);
+            // existing stays null — falls through to createCustomer path below
           }
         }
         if (existing) {
@@ -336,26 +349,35 @@ const CustomerModal = ({ onClose, onSave, initialData = null, restaurantId = '',
               loyalty:       existing.loyalty,
             };
           }
-          await updateCustomer(customerId, {
-            name: name.trim(),
-            phone: phone.trim(),
-            dob: birthday || undefined,
-            anniversary: anniversary || undefined,
-          }, restaurantId);
+          // BUG-294: non-blocking CRM update (phone already registered)
+          try {
+            await updateCustomer(customerId, {
+              name: name.trim(),
+              phone: phone.trim(),
+              dob: birthday || undefined,
+              anniversary: anniversary || undefined,
+            }, restaurantId);
+          } catch (crmErr) {
+            console.warn('[CustomerModal] BUG-294: CRM update (existing phone) failed, proceeding:', crmErr);
+          }
         } else {
           // Truly new customer — create in CRM
-          const result = await createCustomer({
-            name: name.trim(),
-            phone: phone.trim(),
-            dob: birthday || undefined,
-            anniversary: anniversary || undefined,
-          }, restaurantId);
-
-          if (result?.existing) {
-            // Duplicate phone — CRM returned existing customer
-            customerId = result.customer_id;
-          } else {
-            customerId = result?.customer_id || `CUST-${Date.now()}`;
+          // BUG-294: non-blocking CRM create with local-id fallback
+          try {
+            const result = await createCustomer({
+              name: name.trim(),
+              phone: phone.trim(),
+              dob: birthday || undefined,
+              anniversary: anniversary || undefined,
+            }, restaurantId);
+            if (result?.existing) {
+              customerId = result.customer_id;
+            } else {
+              customerId = result?.customer_id || `CUST-${Date.now()}`;
+            }
+          } catch (crmErr) {
+            console.warn('[CustomerModal] BUG-294: CRM create failed, proceeding with local id:', crmErr);
+            customerId = `CUST-${Date.now()}`;
           }
         }
       }
@@ -531,11 +553,11 @@ const CustomerModal = ({ onClose, onSave, initialData = null, restaurantId = '',
           )}
 
           {/* CR-002: Past Favourites (hidden for first-time or no intel) */}
-          {isExistingCustomer && intel && !intel.isFirstTimeCustomer && intel.orderPatterns.topItems.length > 0 && (
+          {isExistingCustomer && intel && !intel.isFirstTimeCustomer && filteredTopItems.length > 0 && ( // CR-376-FU-A
             <div data-testid="customer-favourites-section">
               <label className="text-xs font-medium mb-2 block uppercase tracking-wide" style={{ color: COLORS.grayText }}>Past Favourites</label>
               <div className="flex flex-wrap gap-2">
-                {intel.orderPatterns.topItems.map(item => (
+                {filteredTopItems.map(item => ( // CR-376-FU-A
                   <button
                     key={item.itemId}
                     onClick={() => handleIntelItemClick(item.itemId)}

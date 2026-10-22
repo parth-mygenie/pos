@@ -1,11 +1,80 @@
 # Layer 9 — Open Gaps Register
 
+## 2026-09-28 — CR-390 MM recovery / Gate 3 draft (OPEN)
+
+Owner accepts option 3b: **OD-390-25 LOCKED FOR PLANNING** (read-only discovery first); 1a/2a retained. **Gate 3 OPEN / OWNER REVIEW; no Gate 4 GO**, no access/discovery permission. Current presentation: `handover/SESSION_HANDOVER_2026_09_28_CR390_OPTION3B_ACCEPTED_PRESENTATION.md`. These implementation/evidence gaps remain OPEN despite decision acceptance.
+
+| ID | Priority | Status | Gap | Owner / Next |
+|---|---|---|---|---|
+| OG-CR390-001 | P0 recovery safety | OPEN | Runner still unsafe; no implemented identity/request guards. Category reorder submits whole vector and is now gesture-only/no-write under OD-390-23. | Present P3B-1…4 scope/access/privacy/staged GO; do not run old manifest. Option 3b acceptance does not fix safety. |
+| OG-CR390-002 | P1 coverage | OPEN | Original 34 blocked/36 partial, 50 PNGs/42 hashes unchanged. Demo bindings, populated variations, safe photos/printer/recipe evidence not confirmed. | 3b read-only inventory FIRST only after separate access/scope GO; unknown IDs come from inventory. Owner then reviews missing examples/later exact actions. |
+| OG-CR390-003 | P1 content / privacy | OPEN | Truthful adaptations accepted but original narration/frames unrepaired; privacy-sensitive old evidence remains. | OD-390-24/25 locked for planning; source-script rewrite, capture/data/public export/video still not authorized. Metadata-only private discovery output recommended, approval pending. |
+
 **Status:** POPULATED
-**Last Updated:** 2026-06-13 (CLOSURE agent gap audit backfill — POS 4.0 sprint gaps added/closed)
+**Last Updated:** 2026-09-25 (Wave A QA: OG-INV-001 filed — BUG-456 MINOR `Number(ing.displayQty)` NaN risk; OG-INV-002 filed — BUG-457 addon runtime coverage gap). Prior: 2026-09-24 (CR-385 P5 closure §5.7: OG-PMS-022 re-observed in the 2026-09-24 probe pack, unchanged; OG-PMS-027 / BQ-385-19 re-confirmed (LR `charge.nights_detail` on gate4 §4 + n11); OG-PMS-042 kept OPEN (P5 drove no legacy Departures drawer — it.34 had no departure rows); OG-PMS-048 stays OPEN → FU-385-D (owner sentence verbatim); OG-PMS-049 stays TRIAGED. Info: 24 pre-existing `react-hooks/exhaustive-deps` build warnings in 12 non-CR-385 files (FINAL_GUARDS G6) — outside CR-385, no P5 gap. Report `test_reports/QA_REPORT_2026_09_24_CR385_P5_ROLE4.md`.)
 
 ---
 
-## POS 3.0 Open Gaps
+## 2026-09-25 — Wave A QA Gaps (BUG-455/456/457)
+
+| ID | Priority | Status | Gap | Owner / Next |
+|---|---|---|---|---|
+| OG-INV-001 | P3 | **OPEN — MINOR** | `InventorySetupPanel.jsx L190`: `stockQty = Number(ing.displayQty || ...)` — if `displayQty` is a formatted string like "9.4 pkt", `Number()` → NaN → 0 → unit/conv incorrectly unlocked for stocked ingredient. Low probability on current data (backend sends numeric `displayQty`), but fragile if contract drifts. | Owner decides: ship or fix. If fix: `parseFloat(ing.displayQty)` or use `calQuantity` directly. |
+| OG-INV-002 | P3 | **OPEN — DATA GAP** | BUG-457 addon-tab delete dialog (reason dropdown + disable gate) cannot be runtime-tested — preprod RID 835 has 0 addon recipes. Code-verified PASS only. | Deferred to owner smoke (Gate 6) on a restaurant with addon recipes. |. Prior: **Last Updated:** 2026-09-22 (CR-385 D86: OG-PMS-038/039/040/041 deferred 4th time → must close in P4 QA (independent, live) + combined P2/P3/P4 smoke). Prior: 2026-09-22 (CR-385 Phase 2 QA gate close: OG-PMS-038…044 filed — upgrade path untested live, toggle cycle/F1/C7 live owed, API read-back pending preprod 404, BQ-385-26). Prior: 2026-09-08 (CR-368 Gate 2: OG-AUDIT-002/003/004 filed — intake count drift, BUG-147 marker mismatch, barrel-export convention abandoned). Prior: 2026-09-08 (CR-372-A Gate 5a: F-SEC-01/F-SEC-02/F-SEC-07 RESOLVED via CR-372-A. OG-AUDIT-001 remains OPEN — owned by CR-369). Prior: 2026-09-08 (CR-372-A Gate 2: OG-AUDIT-001 filed — v0.7 prompt `__dev` path refs → CR-369).
+
+---
+
+## CR-385 v2.8 planning continuation — source/document discrepancy
+
+| ID | Priority | Status | Gap | Owner / Next |
+|---|---|---|---|---|
+| OG-PMS-021 | P2 | OPEN — Gate 2.6 planning validation | IA Rev 3.2 notes imply Payment Method + Checkout are already pinned in `CollectPaymentPanel`. Source reality: scroll body starts at L1321, Payment Method at L2681 remains inside it through L3297; only Pay Button L3299–3326 is outside. HTML v2.8 is a MOCKED target design, not proof that a ~4-line `hideRoomSections` prop delivers that layout. | Record source-layout delta in Gate 2.6; scope/mechanism owner decision before Gate 3 spike/plan; no hotspot edits now |
+
+## 2026-09-17 — CR-385 Gate 2 probe findings (PLANNING)
+
+| ID | Priority | Status | Gap | Owner / Next |
+|---|---|---|---|---|
+| OG-PMS-017 | P3 | **STALE DOC — flagged R1** | `dashboard-kpis` now returns `today.no_show_count` (probe 2026-09-17, RID 69). BUG-385 intake says field missing. `fromDashboardKpis` does not read it. | Re-verify BUG-385 status at CR-363 Night Audit; 1-line transform read if needed |
+| OG-PMS-018 | P3 | **OPEN — info** | `room-status-board` rows carry `hk_assignee` (unread by `roomStatusTransform.fromBoardRoom`). Belongs to CR-365 HK workflow, not CR-385. | CR-365 Gate 2 |
+| OG-PMS-019 | P2 | **RESOLVED 2026-09-20** — `charge.balance_due` (BQ-385-08) is authoritative; FE must never read `balance_payment` (D50) | LR rows carry `balance_payment` but value is inconsistent (₹900 vs ₹950 for identical folios) and excludes F&B/room orders. FE must keep N folio calls for true balance. Evidence: `evidence/CR-385/CR-385_balance_compare.json`. | Backend brief on CR-385 Gate 2 close |
+| OG-PMS-020 | P3 | **OPEN** | Room tile "View Folio" (`RoomStatusPage.jsx` L279/L295) → `/reports/rooms`; In-House/Departures → `/pms/folio/:id`. Inconsistent. | CR-385 SC-385-01 (owner ack) |
+
+## 2026-09-02 — Room Advance Payment Gap (CR-357)
+
+| Gap ID | Severity | Status | Description | Resolution Path |
+|---|---|---|---|---|
+| OG-ROOM-ADV-001 | P1 | **OPEN — OD-7 pending backend** | Advance only deducts from room charge. Food charges not offset. Grand Total = food + max(0, room−advance) instead of (room+food) − advance | CR-357 Gate 2 after OD-7 confirmed |
+| OG-ROOM-ADV-002 | P2 | **OPEN** | Advance paid not visible on dashboard card while order is running | CR-357 implementation — OrderCard/DineInCard |
+| OG-ROOM-ADV-003 | P2 | **OPEN** | Excess advance (advance > total bill) silently lost at ₹0 | CR-357 — credit posting on excess |
+
+### Owner Decisions Frozen 2026-09-02 (CR-357)
+- **OD-1**: Advance covers room + food combined (entire stay)
+- **OD-2**: Deduction at checkout
+- **OD-3**: Multiple mid-stay deposits allowed
+- **OD-4**: Excess advance → add to credit account
+- **OD-5**: Negative credit allowed (no block)
+- **OD-6**: Dashboard card shows advance paid + outstanding balance while order is running
+- **OD-7**: **OPEN** — backend must confirm: does `remaining_room_balance` = (room_price + food_total − all_advances) OR room-only?
+
+---
+
+
+## POS 5.x — PMS Phase 1 Open Gaps (2026-09-03)
+
+| Gap ID | Severity | Status | Description | Resolution Path |
+|---|---|---|---|---|
+| OG-PMS-001 | P2 | **RESOLVED — CR-360 IMPLEMENTED** | S6 In-House Guests: KPI tiles + View Bill. | CR-360 Gate 5a. Awaiting QA. |
+| OG-PMS-002 | P3 | **OPEN** | S6 In-House Guests: Walk-in guest checkin/checkout/balance show "—" — no AIOSELL reservation record. Would need per-row detail fetch (`getSingleOrderRoom`). | Phase 3 or separate CR if needed |
+| OG-PMS-003 | P3 | **OPEN** | View Bill (Phase 1) links to room orders report. Full bill + checkout via CollectPaymentPanel is Phase 3 (Departures → checkout). | Phase 3 — Departures screen (CR-358-P3) |
+| OG-PMS-004 | P3 | **OPEN** | `aiosellTransform.js` line 75: inventory rooms use `r.roomCode ?? r.room_code` — same field name gap as BUG-377. If `fetch-inventory` also uses `room_id`, the inventory bars won't populate. | Probe before Phase 1 close or Phase 5 |
+| OG-PMS-005 | P3 | **OPEN** | S3 New Booking room picker (`GET /aiosell/rooms`) cannot show occupied/available state — availability endpoint not built (OD-P2-04). Staff may pick an occupied room; backend rejects at check-in. | Phase 4 — `room-status-board` (CR-358-P4) feeds picker state |
+| OG-PMS-006 | P2 | **STALE DOC — flagged R1** | `impact/CR-358-P2_IMPACT_ANALYSIS.md` claimed `App.js` needs "zero changes"; code reality: `/pms/new-booking` + `/pms/check-in` mount `PmsPlaceholderPage`. Gate 3 plan adds SC-01 (4-line route re-point, owner ack at Gate 4). | Closes when SC-01 acked + Edit 8 shipped |
+| OG-PMS-007 | P2 | **BACKEND — BRIEF SENT** | `user-group-check-in` without `id_type` → 500 after creating an order (orphan `orders.id 1232204`, non-transactional). FE workaround: always send `id_type`. | `backend_briefs/BACKEND_BRIEF_BUG-BE-05_2026_09_03.md` — backend to add validation + transaction |
+
+
+---
+
+
 
 ### Unfrozen Business Rules (7)
 
@@ -318,3 +387,129 @@ Both formulas frozen as intentional design choices. Future agents MUST NOT align
 | OG-CR053-NO-TRAINING-CONFIG-SEED | `training_restaurant_config` collection is empty (0 docs). Catalog endpoint falls back to "all active courses" when no config row exists. Acceptable for pilot — needs a per-restaurant enable script once Owner Admin Panel ships (Phase 2). | P3 | NO |
 | OG-CR053-BACK-ARROW-SELECTOR | M4 step 7 and M5 step 6 use a structural CSS selector `[data-testid='product-form'] > div:first-child > button` to spotlight the form's back arrow, because the ArrowLeft `<button>` in `ProductForm.jsx:289` has no `data-testid`. Brittle if POS markup ever reorders. Long-term fix: add `data-testid="product-form-back"` to that button (1-line POS change, but currently forbidden under CR-053's "no POS code change" mandate). Same risk applies to QuickEdit / DeleteConfirm Cancel buttons. Filed 2026-06-18 during CR-053-UX-01 implementation. | P3 | NO — structural selector works; revisit if POS form markup ever changes |
 | OG-CR053-MULTILINGUAL | English-only for v1 of training tour (CR-053-UX-01). Hindi / Tamil / regional language support deferred to a future CR. Will need: (1) mission text moved to i18n files, (2) language picker in launcher, (3) tone review per language. Owner decision: when does multi-lingual become a priority? | P3 | NO — v1 is English-only by design |
+
+### GAP: CR-112 — Price Visibility Permission Key (2026-07-27)
+**ID:** GAP-CR112-PRICE-PERMISSION
+**Status:** OPEN — owner will provide key during implementation
+**Description:** OrderCard item price display for aggregator needs a permission/setting key to control visibility. Owner confirmed a key exists but will provide it during role-gating CR implementation. Until then, CR-112 implementation should include a permission guard placeholder.
+**Related:** CR-112, CR-106
+
+### GAP UPDATE: CR-112 — Price Permission is EMPLOYEE-LEVEL (2026-07-27)
+**ID:** GAP-CR112-PRICE-PERMISSION (updated)
+**Correction:** Price visibility is **employee-level permission** (role-based, from `role[]` array in login response), NOT restaurant-level setting. Owner will provide the exact permission key during role-gating CR.
+**Current permissions checked:** 53 keys for Owner role. No explicit `show_price` or `hide_price` exists yet — key to be created by backend.
+**Impact on CR-112:** The `isAggregator && item.unitPrice > 0` guard currently implemented is a placeholder. Must be replaced with `hasPermission('price_key') && isAggregator && item.unitPrice > 0` when the key is provided.
+
+---
+## CR-133 Gap Batch (2026-08-10)
+
+| Gap | Status | File | Notes |
+|---|---|---|---|
+| G1: Bill/KOT copies sticky at 1 | PENDING FIX | `shared.jsx` | `parseFloat('') || 0` + `Math.max(1,...)` — fix onChange/onBlur |
+| G2: KDS in default printer GET | BACKEND BRIEF | backend | OD-A: backend to remove KDS from default data |
+| G3a: Aggregator fields missing from printer UI | CLOSED — by design | AutoPrintTab.jsx | OD-B: live in CR-135 only |
+| G3b: employee_id dropdown | UNBLOCKED — API confirmed | `BillContentTab.jsx` | OD-C: employee list API from backend |
+| G4: Print style 0 sticky | PENDING FIX | `PrintStyleTab.jsx` | Same root as G1 |
+| G5+G6: Android style + print style broken | PENDING FIX — CRITICAL | `printerAgentConfigTransform.js` + `PrintStyleTab.jsx` | API shape changed: flat → windows/android split |
+| OG-PMS-007 | P2 | **RESOLVED 2026-09-03** (backend r3, agent-verified probe 15: `pah` on 7/7) | `GET /aiosell/local-reservations` has no `pah` (pay-at-hotel) field — original IA §C mapped Prepaid/PAH badge to it. S1/S9 badge cannot render. Backend ask (non-blocking); transform guards `pah ?? null`. | CR-358-P3 OD-P3-03 |
+| OG-PMS-008 | P2 | **SUPERSEDED** — CR-358-P3 OD-P3-01=(d) hosts CollectPaymentPanel in a PMS slider; Dashboard deep-link no longer needed | No deep-link into OrderEntry/CollectPaymentPanel — `DashboardPage.jsx` declares `useLocation()` but never reads `state`/`search`. Departures "Check Out" cannot open checkout directly without hotspot change. | CR-358-P3 OD-P3-01 (rec. B now; A as future CR) |
+| OG-PMS-009 | P3 | **ACCEPTED AS-IS** (backend declines paging/date filter this sprint) | `local-reservations?view=arrivals` returns all `pending` regardless of checkin date; no pagination meta. Today/Late filtering + pagination must be client-side. | CR-358-P3 OD-P3-02/07 |
+| OG-PMS-010 | P2 | **PARTIALLY RESOLVED** (2026-09-08 re-probe) | Backend auto-HK IS firing: r2 (8526) has `manual_status:hk` since 2026-09-04; r1 (8528) has `manual_status:hk` since 2026-09-08T20:01. `auto_hk_on_rm_checkout:true` confirmed in board response. **Remaining FE bug:** `fromRoomStatusBoard` line 28 counts HK by `displayStatus` — but auto-HK on occupied rooms sets only `manual_status:hk`, `display_status` stays `occupied`. Result: "HK 0" filter tab despite 2 HK rooms. Fix: count `manualStatus==='hk'` not `displayStatus==='hk'`. Register as BUG. Evidence: `evidence/INV-OG-PMS-010-013-014-015/INVESTIGATION_REPORT_2026_09_08.md`. | BUG intake — roomStatusTransform.js L28 |
+| OG-PMS-011 | P3 | **OPEN** (P3 closure item) | `frontend/public/cr358-p3-design-comparison.html` — local copy is the pre-reskin version (contains forbidden `#3B82F6`, `#E8EAED`, `#A0A0A0`); `origin/PMS1` has the token-compliant v2.1 (63/63 line diff). Not P4 scope; sync the file from origin at P3 closure. Found 2026-09-04 during CR-358-P4 Gate 3 entry check. | CR-358-P3 closure |
+| OG-PMS-013 | P2 | **UNCONFIRMED** (re-probed 2026-09-08) | 2026-09-08 fresh probe: `BDC7497606` + `BDC6263973` now show `restaurant_table_id: null` in LR AND are absent from board (rooms have real in_house guests now). Cannot reproduce original contradiction in current state — either backend fixed soft-allocation logic OR those specific rooms now have real guests masking the issue. Architectural risk remains: re-probe when next unassigned pending booking appears on the board. Keep OPEN until backend explicitly confirms fix. Evidence: `evidence/INV-OG-PMS-010-013-014-015/INVESTIGATION_REPORT_2026_09_08.md`. | CR-361 Gate 2 — verify at next pending booking |
+| OG-PMS-014 | P1 | **RESOLVED 2026-09-08** | Backend confirmed (rate_push_r reply): HTTP 403 was caused by **wrong field names in the probe**, not a permission gap. Correct fields: `room_order_id`, `payment_amount`, `payment_mode`. `roomService.js` L169-171 already uses correct fields. Fresh probe with correct fields → **HTTP 200 confirmed**. BUG-384 closed — no FE code change needed. | CLOSED — FE code already correct |
+| OG-PMS-015 | P2 | **RESOLVED 2026-09-08** | Backend confirmed (rate_push_r reply): `mark-no-show` sets `operational_status = no_show` on local reservation. CR-363 Night Audit can derive no-show count by filtering LR for `operational_status === 'no_show'`. No separate backend field needed. OD-385-01 resolved: FE-derive via operational_status. | CLOSED — derive from operational_status |
+| OG-PMS-016 | P3 | **OPEN** (filed 2026-09-06) | Order-family endpoints only (`get-single-order-new`, `report/order-logs-report`, `pos/room-payment`) moved to `/api/v2/` (v1 → 404). v1 is otherwise live: 12/14 probed routes 200, 4 × 403 permission-scoped (see `evidence/BASELINE-2026-09/api_probe_v1_v2_2026_09_06.md`). Frontend already on v2 for the order family — no runtime breakage. Code still declares 35 live v1 endpoints (login, profile, categories, products, tables, running orders…) — see `constants.js`. Probes/briefs: v2 for order family, v1 elsewhere. *(Reworded 2026-09-08, CR-370 C1 — original text overstated v1 as defunct; F-DRIFT-05.)* | Housekeeping |
+| OG-PMS-012 | P2 | **RESOLVED 2026-09-04** (remote added, 9 files checked out from `origin/PMS1` `0c3d3c0`, `git diff origin/PMS1 -- frontend/src` empty) | Local `/app/frontend` git had **no remote configured**; `/app/frontend/src` was 9 files behind `PMS1` (P3 pages, `PmsCheckoutDrawer.jsx`, P3 blocks in `pmsService.js`/`aiosellTransform.js`, App.js P3 routes, BUG-380 edits). Registry said P3 GATE 4 DONE while local still served Phase-3 placeholders. **Process gap:** DEPLOYMENT/IMPL boot must run `git fetch origin && git diff --stat origin/<branch> -- frontend/src` and require empty before planning/coding (added to CR-358-P4 plan §6 step 1 + R11). | CR-358-P4 Gate 3 |
+
+
+
+## 2026-09-08 — AUDIT Track Gaps (CR-372-A planning)
+
+| Gap ID | Severity | Status | Description | Resolution Path |
+|---|---|---|---|---|
+| OG-AUDIT-001 | P3 | **OPEN** (filed 2026-09-08, CR-372-A Gate 2, owner OD-CR372A-04) | `control/AGENT_PROMPT_ALPHA.md` v0.7 carries 6 references to the dev dashboard at `frontend/public/__dev/` / `<preview>/__dev/data/…` (L279 STEP -1 queue path · L1057 DEPLOYMENT "curl /__dev/data/config.json → 200" · L1219 Release Hygiene "except __dev/" · L1250 Audit §F data sync · L1614/L1637 schema section). CR-372-A moves the dashboard to `/app/memory/dev-dashboard/` (filesystem only) so all 6 become stale; the DEPLOYMENT check becomes a false-negative. Also pre-existing: `GET /api/workflow-queue` (L280) does not exist in `backend/server.py`; `/app/scripts/gen_dev_dashboard_config.js` (cited in `__dev/README.md`) does not exist. v0.7 is **not** edited by CR-372-A. | CR-369 (v0.8) — rewrite the 6 refs to `/app/memory/dev-dashboard/data/*.json`, drop the curl check, drop `/api/workflow-queue`. CR-371 must target the new path (OD-CR371-02). |
+| OG-AUDIT-002 | P3 | **OPEN** (filed 2026-09-08, CR-368 Gate 2) | CR-368 intake counts (56 failures / 15 suites / 42 test files / 3 fake scripts) ≠ code truth on 2026-09-08 (54 / 11 / 48 / 2). BUG-382 fixed 1 script + axios mapper in between; no Jest log preserved under `evidence/BASELINE-2026-09/` to reconcile the original 56. Code wins (R1). Evidence: `evidence/CR-368/jest_full_run_2026_09_08.log`. | CR-368 (intake correction at closure) |
+| OG-AUDIT-003 | P3 | **OPEN** (filed 2026-09-08, CR-368 Gate 2) | `BulkEditor.jsx:682` marker `// BUG-147: prefix item name` does not match registry BUG-147 (AddCustomItemModal duplicate-item toast, INTAKE). Marker/registry mismatch; breaks 3 tests in `BulkEditor.cr027p3.test.jsx`. Pre-Release Audit §F will flag. | CLOSURE Phase B (reconcile ID) |
+| OG-AUDIT-004 | P3 | **OPEN** (filed 2026-09-08, CR-368 Gate 2) | Barrel-export convention abandoned: `pages/index.js` misses 33/42 pages, `components/reports/index.js` misses 1/13, while `barrelExports.test.js` T-12/T-14 still enforce it. Owner policy OD-CR368-04. | CR-368 (OD-CR368-04) |
+
+## 2026-09-20 — CR-385 backend build 3 verification (PLANNING)
+| ID | Prio | Status | Gap | Owner |
+|---|---|---|---|---|
+| OG-PMS-022 | P3 | **OPEN — info (backend acknowledged residual)** · **P5 2026-09-24:** re-observed in the release probe pack (gate4 §6 read-back: `remaining_room_balance` / `balance_payment` 18,188 after TAB departure) — unchanged; FE unaffected (D50). Stays OPEN — info. | Folio `room_info.room_payment_summary.remaining_room_balance` stays at the pre-TAB value after a TAB settlement (`charge.balance_due` = 0, `payment_status` = paid). FE rule (D50): never derive "owed" from the folio summary. | Backend hygiene; FE rule in AC-22 |
+| OG-PMS-023 | P3 | **CLOSED 2026-09-20 (D52 owner · D53 backend: `allow_early_checkin` setting, 422 verified)** | Backend allows check-in before the stay date and into a room still in HK (`occupied_hk`). **N7: FE blocks early check-in** unless `meta.business_date >= checkin` (Modify dates first). **N9: allowed, FE warns** (HK badge + amber note). No backend change. | FE (M3) |
+| OG-PMS-024 | P2 | **CLOSED 2026-09-20 — BQ-385-17 delivered as `extend_rate_mode=calendar`, verified 17,500 (`probes_2026_09_20_n7n8/`)** | Extension nights are priced at the held check-in rate, not the rate table for those nights. Owner: rate table → backend setting, default calendar. | Backend ✅ |
+| OG-PMS-025 | P2 | **CLOSED 2026-09-20 — N11 fixed + verified (per-night slab, `nights_detail[]`, GST 2,188 reproduced; `probes_2026_09_20_n11/`)** | In `extend_rate_mode=calendar` the GST slab was applied to the blended `rate_per_night`. Backend v2: slab per sold night; upgrade at slab of max night; `nights_detail[] {date, rate, source, gst_percent, gst}`. | Backend ✅ |
+| OG-PMS-026 | P2 | **OPEN — backend D14** | Calendar-path `room-extend-stay` response `data.charge.advance_payment / balance_due` omit the collect-now payment posted in the same call (LR read-back correct, ledger correct, TAB clamped server-side). FE rule D55: refetch LR after extend; never drive the row from the extend response. | Backend (MASTER §10 D14) |
+| OG-PMS-027 | P2 | **CLOSED 2026-09-21 — BQ-385-19 shipped + FE-validated** (`probes_2026_09_21_bq19/`: LR `charge.nights_detail` present for calendar stays, absent for held/never-extended; money unchanged) · **P5 2026-09-24:** re-confirmed on the release build — LR list `charge` carries `nights_detail` (gate4 §4, n11 N11-2, d1516 s3/s4); held-mode rows `nights_detail: null` as designed. | `nights_detail` is response-only (calendar extend); not on the LR list `charge`, check-in or folio → per-night lines vanish on reload. | Backend |
+| OG-PMS-028 | P2 | **OPEN — doc precision (FE)** | LR reservation has no top-level `payment_status`; the paid flag is per room line `rooms[].order_payment_status` (`unpaid`/`paid`). Handover §1 wording "payment_status == 'paid'" must be read as `rooms[0].order_payment_status`. Cleared helper in CR-385 plan §3 C2-R; unit test on `probes_2026_09_20_g4_09/local_reservations_view_all.json`. | FE (CR-385 M0) |
+| OG-PMS-029 | P3 | **OPEN — contract note** | `local-reservations?view=all` returns **422 without `start_date`/`end_date`**; `dashboard-kpis` likewise. FE must always send the window (CR-385 plan §3 C2/C4). Board has **no `sections[]`** — Area grouping derives from room `title` (D59). | FE (CR-385 M0) |
+| OG-PMS-030 | P1 | **CLOSED 2026-09-20 22:45 — D15 fixed + FE-validated** (`probes_2026_09_20_d1516/`: shorten 10,100 / 11,918, `nights_detail` 1 row) | `room-extend-stay` shorten re-prices the remaining night(s) at the blended `rate_per_night` instead of the sold per-night rates (9,500 vs 10,100; drift compounds on re-extend). `evidence/CR-385/probes_2026_09_20_final/x3_shorten.json`. | Backend (BACKEND_BRIEF_CR-385_2026-09-20_FINAL_PACK) |
+| OG-PMS-031 | P1 | **CLOSED 2026-09-20 22:45 — D16 fixed + FE-validated** (move keeps 17,500 / 1,094 + `nights_detail`) | `room-extend-stay` with `new_restaurant_table_id` (same type/dates) recomputes GST at a single slab (2,188 → 3,150), losing N11 per-night slabs. `s5_move.json`. | Backend (same brief) |
+| OG-PMS-032 | P2 | **CONFIRMED by BE 2026-09-20 (contract, not a bug)** — legs not stored; sum validated (422 on mismatch). FE single-method advance; Split-at-advance parked (D47-h) | `direct-reservation.advance` accepts `method:"split"` + `split_payments[]` but stores/echoes only the lump sum; legs/method/txn not confirmed. FE ships single-method advance until answered (OD-385-18 a). | Backend |
+| OG-PMS-026 | P2 | **CLOSED 2026-09-20 22:00 — D14 fixed + verified** (final pack: response `charge` = LR 1,500 / 18,188). | — | Backend ✅ |
+| OG-PMS-033 | P3 | **CLOSED 2026-09-21 — `held_fallback` observed live** (owner scenario: temporary rate wipe → extend → restore; `probes_2026_09_21_held_fallback/`). Real fixture for the FE chip. | `nights_detail[].source = "held_fallback"` has never been observed live: every sandbox date has a CM rate. Need a no-rate date window on `sandbox-pms` (or BE to remove one for 48 h) to see the FE chip "held (no rate for this date)" once (CR-385 G4-03 b). Not money-blocking — the calendar/held paths are verified; the fallback shares the held renderer. Owner may waive. | Backend (BACKEND_BRIEF_CR-385_2026-09-20_FINAL_PACK §BQ-385-21) |
+| OG-PMS-034 | P3 | **OPEN — latent (FE)** | `restaurantSettingsService.updateSettings` (CR-019) posts `FormData` without an explicit multipart header; shared axios default `application/json` makes axios JSON-encode it (`{"data":"<string>"}`). Preprod tolerates it today. Same defect fixed for `updateFrontDeskRules` (D75). Fix under CR-019 owner approval, not CR-385. | Frontend |
+| OG-PMS-035 | P2 | **OPEN — backend behaviour** | `PATCH local-reservations/{id}` (modify) appends `"| MODIFY: <reason>"` to `special_requests`; Front Desk rows then show the SR ● marker after every modify and the guest's real special request gets polluted. No FE workaround (FE must not strip server text). → BQ-385-23. | Backend |
+| OG-PMS-036 | P3 | **OPEN — backend hygiene** | `local-reservations/{id}/cancel` and modify return **500 TypeError with stack trace** when `{id}` is not an int (surfaced by BUG-441). Ask: 404/422 with a clean body. → BQ-385-24. | Backend |
+| OG-PMS-037 | P2 | **OPEN — backend behaviour** | Rooms tile "2 occupied · 20 % occupancy": occupancy % comes from `dashboard-kpis` (MV-06) which excludes overdue in-house guests, while occupied/free come from the board. Mixed sources by design (AC-12 / MV-06); numbers disagree whenever a guest overstays. → BQ-385-25. Smoke note: known, ignore until backend fix. | Backend |
+
+## CR-385 Phase 2 QA gate close — gaps acknowledged by the owner (2026-09-22, D83: "please note these gaps, update docs and decision and close gate")
+
+| ID | Priority | Status | Gap | Owner / Next |
+|---|---|---|---|---|
+| OG-PMS-038 | P1 | **CLOSED 2026-09-23 — Gate 6 combined smoke M2-S08 PASS; owner verbatim: "1 pass as sign off this was checked in smoke". Paid-upgrade check-in (Executive booking → Check-In → Show higher categories → Suite) verified live by the owner. No P5 action (plan note R-P5-2 path a); Session A paid-upgrade leg becomes optional regression, not a gap closer.** Prior: OPEN — 5th deferral → combined smoke M2-S08 only (P4 QA it.21–26: r2 stay 174 occupied throughout; owner 2026-09-22 "assuming defaults") | Paid-upgrade check-in (Executive → Suite via "Show higher categories") **not tested live**: Executive type sold out on the sandbox (r2/r3 are the owner's real stays). Unit-covered (upgrade FormData, eligibility) only. | **Re-test target (D84): P3 QA (live) + combined P2/P3 owner smoke M2-S08.** Not waived. **P3 QA 2026-09-22: still BLOCKED — Executive 'Sold Out' (stay 174 on r2 not checked out).** Needs an Executive room free (stay 174 on r2 checked out). **Re-test target (D86): P4 QA (live, independent testing_agent) + combined P2/P3/P4 smoke M2-S08.** **P4 QA Session A it.21/22/23: still BLOCKED — r2 (stay 174) occupied; owner 2026-09-22 'assuming defaults' → recorded 'not available — OG-PMS-038 open, 5th deferral' → combined smoke M2-S08 only.** |
+| OG-PMS-039 | P2 | **CLOSED 2026-09-22 — P4 QA Session A (`iteration_23.json`, QA_TGK): full toggle cycle live (disabled → ON+Saved → enabled → OFF+Save+reload → disabled), ended OFF + Rate table** | Early check-in **live toggle cycle** (OFF → ON → OFF via Front Desk Rules) not executed by QA; only unit V-M3-02 + structural smoke (disabled + tooltip present). | **Re-test target (D84): P3 QA (live, T3) + combined smoke M2-S09/S10.** Not waived; rule ends OFF. **P3 QA 2026-09-22: not executed (session budget) → combined smoke.** **Re-test target (D86): P4 QA (live, independent, T3) + combined smoke M2-S09/S10.** **P4 QA Session A it.22: NOT executed — QA tool timed out waiting for `toggle-allow-early-checkin` after a text-match click on the Channel Manager tab (the tab element has no data-testid — legacy `ChannelManagerPage`, outside the P4 plan note); toggle confirmed OFF at exit.** |
+| OG-PMS-040 | P3 | **CLOSED 2026-09-22 — P4 QA Session A (independent testing_agent, `iteration_22.json`)** | F1 (booking form ↔ row expansion exclusivity) and C7 (≤1 rates+availability batch per ≥500 ms, LR unchanged after date toggling) not counted live; unit-covered (single debounced batch). | **Re-test target (D84): P3 QA (live, T7 request counts + LR unchanged) + combined smoke M2-S01.** Not waived. **P3 QA 2026-09-22: not executed → combined smoke.** **Re-test target (D86): P4 QA (live, independent, T7 counts + LR unchanged) + combined smoke M2-S01.** **CLOSED it.22 (2026-09-22): F1 form-swap confirmed both directions; 3× checkout-date change within ~450 ms → rates 0 + room-availability 1 request after the last change (≤1 pair), local-reservations delta 0.** Owner smoke M2-S01 stays as the owner's own look. |
+| OG-PMS-041 | P2 | **CLOSED 2026-09-22 — P4 QA: entry read-back `phase4_qa/t0_entry_readback.json` (18:40 UTC) + exit read-back `phase4_qa/t9_readback.json` (it.26, QA_TGK) 4/4: in-house r2/r3 only · r4/r5/r1 not in-house · 3 settings default · no QA rows** | **API end-state read-back not captured**: preprod `POST /api/v1/auth/vendoremployee/common-login` returned Laravel `NotFoundHttpException` (HTTP 404) from ~16:30 IST 2026-09-22 (still 404 at gate close; **retry 2026-09-22 16:55 UTC → 404; retry 17:46 UTC (pre-smoke, owner-mandated) → still 404**, left OPEN; API read-back after the smoke only if the route returns). UI evidence of clean-up exists ("Checked out · Room r1", Departures list empty); settings untouched in round 2. | Rerun read-back (LR in-house = r2/r3 only · r4/r5/r1 available · 3 settings default) when login is back; save `evidence/CR-385/phase2_qa/t9_end_state.json`. Tell the owner before the login. **D86: retry `common-login` at P4 entry and at P4 exit (owner told first each time); read-back → `evidence/CR-385/phase4_qa/t9_readback.json`.** **P4 ENTRY 2026-09-22 18:37 UTC: `common-login` 200 → read-back captured `evidence/CR-385/phase4_qa/t0_entry_readback.json` (in-house r2/r3 only, r5 available, r1 hk, r4 booked by a not-ours arrival, 3 settings at defaults). Exit read-back still owed (Session C).** |
+| OG-PMS-042 | P3 | **OPEN — process** · **P5 2026-09-24:** kept OPEN — P5 sessions settled every QA stay on the Beta page (Cash it.32, TAB it.33, TAB via API in the probe pack); the legacy Departures drawer was not driven (it.34: no departure rows). Recipe stays in the QA handover template. | QA agent (Role 4) could not drive the legacy Departures checkout drawer → QA stay left in-house; main agent settled it manually (res 236 / order 1232658, Cash ₹35,670). | Add a Departures settle recipe (testids `dep-tab-upcoming`, `dep-checkout-btn-<orderId>`, `payment-cash-btn`, `complete-payment-btn`) to the QA handover template — done in P2 handover §5 note. |
+| OG-PMS-043 | P3 | **NOTE — cosmetic** | `fd-header-date` shows "—" for a moment before `meta.business_date` hydrates (greeting line already dated). | No action unless the owner asks for a skeleton. |
+| OG-PMS-044 | P3 | **OPEN — backend contract (BQ-385-26)** | `direct-reservation` answers HTTP 200 `{status:true, skipped:true, data:null}` for incomplete bodies instead of 422. FE hard-fails on it (unit-tested). | Backend reply on BQ-385-26 (MASTER v2.3). |
+| OG-PMS-045 | P3 | **CLOSED 2026-09-22 (QA_TGK)** | Independent QA (testing_agent) cannot keep the OWNER_TGK single-session login across browser-tool calls (fresh context per call): it.21 aborted with 0 mutations; it.22 ran a single-call flow but consumed 3 logins across calls and stalled at A3 (CM tab text-click race). Each attempt costs owner logins. | **Owner 2026-09-22: QA-only staff login QA_TGK created for testing_agent sessions (OWNER_TGK stays the owner's); option (b) declined — `channel-manager-tab-4` already exists (L198), brief QA to use it. Closes once Session A re-runs cleanly with QA_TGK.** **CLOSED 2026-09-22: it.23 ran with QA_TGK only (4 single-session logins, OWNER_TGK untouched); Session A 6/7 PASS.** |
+| OG-PMS-046 | P3 | **NOTE — QA suggestion, by design today (D70)** | After saving a booking for the business date, Arrivals stays on the first non-empty chip (Late) so the new Today row is only visible after clicking the Today chip. Not a defect (D70 first-non-empty rule); QA suggests jumping to the chip that matches the saved check-in date. | **Owner 2026-09-22: DECLINED — by design (D70). Note only, no code. QA briefs: click the matching chip after a save.** |
+| OG-PMS-049 | P2 | **TRIAGED 2026-09-23 — owner approved quarantine (verbatim: "approved — quarantine all 12 pre-existing suites + the 2 `process.exit` scripts to their owning CRs"); P5 jest gate = `cr385\|bug450` 128 green; no code in those suites.** Quarantine mapping → owning CR: `rawField.test.js` (2) → unknown baseline guard (owner to route) · `barrelExports.test.js` (2: T-12 `ReportLoadingShield`, T-14 `AggregatorPreviewPage`) → barrel-gap owner CR (non-CR-385) · `BulkEditor.cr027p3.test.jsx` (3) → CR-027 follow-up · `BulkEditor.cr036.test.jsx` (3) → CR-036-FU-02 · `placeOrderPayload.test.js` (8), `updateOrderPayload.test.js` (1), `qa_subtotal_delivery_validation.test.js` (4), `POS2_003_REOPEN_A_wire.test.js` (2) → CR-POS2-003 · `profileTransform.test.js` (3) → CR-POS2-003 / Room Module V2 · `printerAgentConfigTransform.test.js` (4) → CR-133 follow-up · `PlatformDropdown.test.jsx` (1) → POS2-002 Phase 3 · `ScanOrderPopOut.test.jsx` (23) → POS2-002 Phase 4 · `pmsService.tapeChart.cr358p4.test.js` + `roomStatusTransform.cr358p4.test.js` (`process.exit`) → CR-358-P4. Previous state: OPEN 2026-09-22 (process) — owner-filed at Gate 6 start. · **P5 2026-09-24:** stays TRIAGED — P5 jest gate `cr385|bug450` 128/128 on the release build (FINAL_GUARDS G5); quarantined suites untouched. | Full jest run not green — 56 pre-existing failures in 12 legacy suites (rawField, barrelExports, BulkEditor ×2, placeOrderPayload, updateOrderPayload, qa_subtotal_delivery_validation, profileTransform, printerAgentConfigTransform, POS2_003_REOPEN_A_wire, PlatformDropdown, ScanOrderPopOut) + two CR-358-P4 script-style tests (`pmsService.tapeChart.cr358p4.test.js`, `roomStatusTransform.cr358p4.test.js`) calling `process.exit`, which kill a full run. None import files touched by CR-385 / BUG-450. | **Entry condition for Phase 5: full suite green or each failure triaged with a decision.** No code now (owner). Run reference: `--testPathIgnorePatterns cr358p4` → 762/818. |
+| OG-PMS-048 | P2 | **RECORDED 2026-09-22 (D88) — Split for room stays → FU-385-D** · **P5 2026-09-24:** stays OPEN pending FU-385-D — owner 2026-09-23 verbatim: "separate follow-up CR. D88 stays; `frontdesk.css` + `hideSectionRows` guard unchanged; OG-PMS-048 stays OPEN pending FU-385-D.". D88 rule + `hideSectionRows` guard unchanged on the release build (FINAL_GUARDS G3/G5); it.34 note: POS `payment-split-btn` not rendered for TGK (no `partial` payment type) — config, not D88. | Front Desk (Beta) Bill hides the payment panel's **Split** tile (`.frontdesk-bill [data-testid="payment-split-btn"] { display:none }`, Phase 4.5b). Room-stay multi-method settlement (Cash+Card, two ledger rows) is therefore only possible on legacy `/pms/departures` until FU-385-D. Also: it.26 F-6 — POS Split tile does not render on a ₹0 order (pre-existing amount gating, not P4 CSS). | FU-385-D scope: decide Split UX for room stays (panel Split inside 440×560 host vs dedicated Front Desk split form), re-enable by removing the one CSS rule + guard test line; M4-S07 re-run with Split. |
+| OG-PMS-047 | P3 | **NOTE — latency, by design (D85 Q2 a)** | In-House/Departures balance cell shows "…" until `getInHouseGuests` (one folio call per stay) resolves — seconds after a check-in or Bill open (it.25). Values consistent once loaded (₹36,670 panel = LEFT = row). | BQ-385-22/27 (server folio balance) retire the FE sum; no FE action. |
+
+---
+
+## 2026-10-13 — Tablet Order-Taking Audit (Phase 1) — PLANNING workstream
+
+Owner directive (verbatim, 2026-10-13): *"check for complete functionality for the tab, for the responsiveness, at least for the order-taking process, not like reports and these things we can see in phase two. ... A specific or specialist agent should be called for that from planning."*
+
+Scope decisions (owner-locked this session):
+- **OD-AUDIT-01 LOCKED 2026-10-13:** Phase 1 scope = order-taking flow only (S1-S15 in `handover/SESSION_HANDOVER_TABLET_ORDER_TAKING_AUDIT_PLAN_2026_10_13.md` §2.1). PMS `c/Out` + Delivery `Assign` → **Phase 1b** (owner option **b**). Reports/Settings/Inventory/etc → **Phase 2**.
+- **OD-AUDIT-02 LOCKED 2026-10-13:** F4 (Firebase messaging unguarded `getMessaging()`) is a pre-audit blocker. Next PLANNING agent MUST (1) re-verify `src/config/firebase.js` state, (2) ask owner (a) fix now / (b) skip affected browsers / (c) defer, BEFORE loading any audit page. No edit to `firebase.js` without owner Gate 4 GO.
+- **Boundary:** No code edits in this workstream. No `testing_agent` call. No gate flip on CR-414 / BUG-537 (stay `GATE_5A_IMPLEMENTED`). Separate IA + plan + Gate 4 GO cycle for each gap approved for fix.
+
+Four already-observed findings parked as pre-populated audit entries (next agent catalogues further, no code change yet):
+
+| ID | Priority | Status | Gap | Owner / Next |
+|---|---|---|---|---|
+| **OG-AUDIT-F1** | **P1** | **OPEN — likely CR-414 regression** | V-800 portrait: Add order button in `Header.jsx` right section (L765-789) clipped off right edge. Root hypothesis: inner search `flex-1 w-full` (L444, CR-414 edit) consumes center section, squeezes sibling Right section off-screen. Blocks new orders. | PLANNING agent to score across V-390/600/768/800 portrait + V-960/1024/1280 landscape; owner decides re-open CR-414 Plan v3 vs file new BUG (next free ≥ BUG-543) as child of BUG-537. |
+| **OG-AUDIT-F2** | **P2** | **OPEN — pre-existing (outside CR-414 scope)** | V-1280 landscape: `CollectPaymentPanel.jsx` outer wrapper has no right gutter — "Pay ₹1,040" button touches viewport edge. Not touched by CR-414. | PLANNING agent to add viewport coverage; owner approves intake (next free BUG number ≥ BUG-543). |
+| **OG-AUDIT-F3** | **P2** | **OPEN — CR-414 by-design per OD-537-03=A, owner may override** | V-960 landscape: `ChannelColumn.jsx` L285 uses `repeat(auto-fill, minmax(280px, 1fr))` on tablet → single-card rows show 3 empty tracks. Visually unbalanced. Switching `auto-fill`→`auto-fit` would collapse empty tracks and stretch remaining cards. | Owner can (a) override OD-537-03 → CR-414 Plan v3 1-line follow-up, (b) raise new CR (next free ≥ CR-416, note CR-415 is already Sidebar Cleanup), or (c) keep `auto-fill` as designed. |
+| **OG-AUDIT-F4** | **P1** | **CLOSED 2026-10-19 — BUG-560 GATE_5A_IMPLEMENTED** | `isSupported()` async guard added before `getMessaging()` in `src/config/firebase.js`. Unsupported browsers skip messaging init cleanly — no unhandled rejection, no CRA overlay. Pre-audit blocker removed. | Fixed via BUG-560 (Investigation → Planning → Implementation, same session). |
+
+> **ID collision note (2026-10-13):** Highest assigned at handover time — `BUG-540` (P&L Expenses) and `CR-415` (Sidebar Cleanup). Next free when the owner intakes any gap above: **≥ BUG-543** and **≥ CR-416**. Numbers advance monotonically; next agent must re-check before assignment.
+
+**Phase-1b carry-over (not open gaps, parked):** PMS `c/Out` responsiveness, Delivery `Assign` responsiveness. Owner chose option (b) → defer until Phase 1 lands.
+
+**Primary handover for next role:** `/app/memory/handover/SESSION_HANDOVER_TABLET_ORDER_TAKING_AUDIT_PLAN_2026_10_13.md`.
+
+
+
+## 2026-10-14 — Retroactive Closure Debt (Option A, owner decision)
+
+**Owner decision 2026-10-14:** 19 items confirmed implemented via code investigation were closed retroactively (Option A) without Gate 2-5 artifacts. No QA handovers, impact analyses, or implementation plans exist for any of them. Registry updated with `qa_gate_status = RETROACTIVE_CLOSURE`. These are accepted as documentation debt — features work in production.
+
+| OG ID | Priority | Items | Missing artifacts |
+|---|---|---|---|
+| **OG-RETRO-001** | P3 | CR-068, CR-121, CR-149, CR-153, CR-156, CR-347, CR-371, CR-392, CR-397, CR-400, CR-401, CR-402, POS2-001, BUG-058, BUG-094, BUG-183, BUG-191, BUG-356, BUG-471 | No Gate 2 (IA), Gate 3 (Plan), QA Handover, or QA Report for any of these 19 items. Intake docs exist for 8 of them (CR-392, CR-400, CR-401, CR-402, BUG-356, BUG-471, CR-371, CR-397). |
+
+**Resolution options (for future sprint):**
+- Write retroactive QA handovers + run spot-checks on preprod → mark OWNER VERIFIED (full §11 Phase B)
+- Prioritise financial items (BUG-058, CR-392, CR-402, POS2-001) for retroactive QA if a regression is ever reported
+- Accept as permanent debt for non-financial items
+
+**Note:** Items are correctly marked CLOSED in registry. This gap is documentation-only.

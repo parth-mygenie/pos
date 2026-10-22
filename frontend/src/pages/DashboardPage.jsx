@@ -16,10 +16,12 @@ import { useRefreshAllData } from "../hooks/useRefreshAllData";
 // for missed-socket-event drift. No UI surface; routes through OrderContext.
 import { useOrderPollingReconciliation } from "../hooks/useOrderPollingReconciliation";
 import RoomCheckInModal from "../components/modals/RoomCheckInModal";
+import { getRoomStatusBoard } from '../api/services/pmsService'; // BUG-387: OOO filter on dashboard
 import CancelOrderModal from "../components/order-entry/CancelOrderModal";
 // BUG-167: useSocketEvents moved to AppSocketManager — removed import
 import api from "../api/axios";
 import { API_ENDPOINTS, STATUS_COLUMNS } from "../api/constants";
+import soundManager from "../utils/soundManager"; // BUG-453
 import { toAPI as orderToAPI } from "../api/transforms/orderTransform";
 import { updateOrderStatus, confirmOrder, completePrepaidOrder } from "../api/services/orderService";
 import { ChannelColumnsLayout } from "../components/dashboard";
@@ -27,6 +29,13 @@ import { StationPanel } from "../components/station-view";
 import NotificationBanner from "../components/layout/NotificationBanner";
 import { isWebOrigin, getRunningOrders } from "../utils/orderOrigin";
 import ScanOrderPopOut from "../components/dashboard/ScanOrderPopOut";
+import AggregatorOrderPopOut from "../components/dashboard/AggregatorOrderPopOut"; // CR-106
+import AggregatorRejectModal from "../components/modals/AggregatorRejectModal";   // CR-106
+import AggregatorDispatchModal from "../components/modals/AggregatorDispatchModal"; // CR-106
+import { updateAggregatorOrderStatus } from "../api/services/aggregatorService";    // CR-106
+// BUG-599: getAggregatorOrderList + aggregatorFromAPI moved to LoadingPage boot
+import { cancelAndRefund } from '../api/services/razorpayRefundService'; // CR-165
+import { toast } from 'sonner'; // BUG-254: error toast for aggregator actions
 
 // ROOM_CARD_TOTAL (Task 4, Apr-2026): card amount for ROOM orders must reflect
 // the full checkout value the cashier will see — i.e., room food/room-service
@@ -40,7 +49,11 @@ const computeRoomCardAmount = (order) => {
   const food = Number(order?.amount) || 0;
   const transfers = (order?.associatedOrders || [])
     .reduce((sum, o) => sum + (Number(o?.amount) || 0), 0);
-  const roomBal = Math.max(0, Number(order?.roomInfo?.balancePayment) || 0);
+  // CR-162: prefer live ledger balance over static check-in snapshot
+  const roomBal = Math.max(0,
+    (Number(order?.roomInfo?.roomPaymentSummary?.remainingRoomBalance
+      ?? order?.roomInfo?.balancePayment) || 0)
+    - (order?.roomInfo?.discountAmount || 0)); // BUG-527: subtract check-in discount — mirrors CPP E1
   return food + transfers + roomBal;
 };
 
@@ -87,7 +100,7 @@ const searchItems = (items, query, getFields) => {
       partial.push(item);
     }
   });
-  return { exact, partial: partial.slice(0, 5) };
+  return { exact, partial }; // BUG-585: removed 5-result cap — show all partial matches
 };
 
 // Helper: extract matching IDs from search results
@@ -159,7 +172,7 @@ const OrderListSection = ({ title, orders, orderType, matchingIds, snoozedOrders
 const DashboardPage = () => {
   const navigate = useNavigate();
   const location = useLocation();
-  const { isLoaded: restaurantLoaded, currencySymbol, cancellation, features, defaultOrderStatus } = useRestaurant();
+  const { isLoaded: restaurantLoaded, currencySymbol, cancellation, features, defaultOrderStatus, settings, searchOptions } = useRestaurant(); // CR-056: added settings; BUG-332: searchOptions
   const { tables: apiTables, isLoaded: tablesLoaded } = useTables();
   const { user, hasPermission, permissions } = useAuth();
   
@@ -175,7 +188,7 @@ const DashboardPage = () => {
   const { getOrderCancellationReasons } = useSettings();
   const {
     dineInOrders, takeAwayOrders, deliveryOrders, walkInOrders,
-    orders,
+    orders, addOrder,
     orderItemsByTableId, getOrderByTableId, getOrdersByTableId, removeOrder, waitForOrderRemoval,
     isOrderEngaged, getOrderById,
   } = useOrders();
@@ -190,6 +203,9 @@ const DashboardPage = () => {
   // nothing — the only visible side effect is the existing ScanOrderPopOut
   // picking up newly-discovered Web/Scan YTC orders.
   useOrderPollingReconciliation();
+
+  // BUG-599: Aggregator orders now loaded during boot (LoadingPage).
+  // Socket events (aggregator_order_69) handle real-time updates post-boot.
 
   // Redirect to loading if data not loaded (auth check handled by ProtectedRoute — T-07)
   useEffect(() => {
@@ -397,6 +413,9 @@ const DashboardPage = () => {
       'channel'  // Req 4: factory default changed from 'status' to 'channel'
     );
   });
+  const [channelActiveFirst, setChannelActiveFirst] = useState(
+    () => localStorage.getItem('mygenie_channel_active_first') === 'true'
+  ); // CR-429
   // VIEW_MODE_LOCK v2 (Task 1 revision, Step 4): lock flags drive whether
   // the Sidebar runtime toggle is shown for each axis. true = admin has
   // locked this axis; false (incl. 'both' / absent) = cashier may switch
@@ -420,8 +439,13 @@ const DashboardPage = () => {
   const [orderEntryType, setOrderEntryType] = useState(null);
   const [initialShowPayment, setInitialShowPayment] = useState(false);
   const [initialTransferItem, setInitialTransferItem] = useState(null);
+  const [initialShowMerge,   setInitialShowMerge]   = useState(false); // BUG-372
+  const [initialShowShift,   setInitialShowShift]   = useState(false); // BUG-372 Transfer
   const [cartsByTable, setCartsByTable] = useState({});
-  const [sidebarExpanded, setSidebarExpanded] = useState(false); // Default collapsed on login
+  // BUG-358: persist sidebar expanded state across reloads
+  const [sidebarExpanded, setSidebarExpanded] = useState(
+    () => localStorage.getItem('mygenie_sidebar_expanded') === 'true'
+  );
   const [searchQuery, setSearchQuery] = useState("");
   const [snoozedOrders, setSnoozedOrders] = useState(new Set());
   // POS2-002 Phase 3 (May-2026): Platform filter state. null = "All" (default).
@@ -433,6 +457,10 @@ const DashboardPage = () => {
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [checkInRoom, setCheckInRoom] = useState(null); // Room object for CheckIn modal
   const [cancelOrderEntry, setCancelOrderEntry] = useState(null); // Table entry for CancelOrderModal
+  const [oooRoomIds, setOooRoomIds] = useState(new Set()); // BUG-387: OOO room IDs — excluded from room column
+  // CR-106: Aggregator modal state
+  const [aggregatorRejectOrder, setAggregatorRejectOrder] = useState(null);
+  const [aggregatorDispatchOrder, setAggregatorDispatchOrder] = useState(null);
 
   // Req 2: Order Taking flag — when false, all card body clicks no-op via
   // early return in handleTableClick. Action buttons inside cards (Mark
@@ -462,6 +490,17 @@ const DashboardPage = () => {
     window.addEventListener('storage', handler);
     return () => window.removeEventListener('storage', handler);
   }, []);
+
+  // BUG-387: fetch OOO/HK room IDs from status board on mount — exclude from Room column
+  useEffect(() => {
+    if (!features?.room) return;
+    getRoomStatusBoard()
+      .then(board => {
+        const ids = new Set((board?.rooms ?? []).filter(r => r.displayStatus === 'ooo' || r.displayStatus === 'hk').map(r => r.id));
+        setOooRoomIds(ids);
+      })
+      .catch(() => {}); // silent fail — worst case OOO room stays visible
+  }, [features?.room]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Req 2 enhancement: react to order-taking flag flips (mount + cross-tab).
   // OFF → force order + status; ON → re-resolve from admin lock/default.
@@ -644,7 +683,7 @@ const DashboardPage = () => {
   const allRoomsList = useMemo(() => {
     if (!tablesLoaded) return [];
     return apiTables
-      .filter(t => t.isRoom && t.status !== 'disabled')
+      .filter(t => t.isRoom && t.status !== 'disabled' && !oooRoomIds.has(t.tableId)) // BUG-387: exclude OOO/HK rooms
       .flatMap(t => {
         const roomOrders = getOrdersByTableId(t.tableId);
         if (roomOrders.length === 0) {
@@ -687,7 +726,7 @@ const DashboardPage = () => {
           order: order,  // full order object for OrderCard fallback (item.order || item)
         }));
       });
-  }, [tablesLoaded, apiTables, getOrdersByTableId]);
+  }, [tablesLoaded, apiTables, getOrdersByTableId, oooRoomIds]); // BUG-387: oooRoomIds added
 
   // BUG-070 (Wave 5, May-2026): group rooms by `sectionName` for Table View
   // sectioned render. Mirrors the `tables` memo's grouped object shape so
@@ -767,6 +806,12 @@ const DashboardPage = () => {
       servedAt: order.servedAt,
       paymentType: order.paymentType || '',
       paymentMethod: order.paymentMethod || '',
+      // CR-106: Aggregator-specific fields for TableCard S/Z badge + read-only
+      isAggregator: order.isAggregator || false,
+      source: order.source || 'own',
+      isWebOrder: order.isWebOrder || false,
+      customer: order.customer || '',
+      customerName: order.customerName || '',
     });
 
     // Helper to enrich dine-in tables with order data (supports split: 1 table → N entries)
@@ -824,7 +869,11 @@ const DashboardPage = () => {
       if (platform === null) return true;
       const hasOrder = !!(item?.orderId || item?.order?.orderId);
       if (!hasOrder) return false;
-      return platform === 'web' ? isWebOrigin(item) : !isWebOrigin(item);
+      // BUG-253: Aggregator filter (Swiggy/Zomato via UrbanPiper)
+      const itemIsAggregator = item.isAggregator === true || item.order?.isAggregator === true;
+      if (platform === 'aggregator') return itemIsAggregator;
+      if (platform === 'pos') return !isWebOrigin(item) && !itemIsAggregator;
+      return platform === 'web' ? isWebOrigin(item) : true;
     };
 
     // CR-018 G9: Schedule filter — cross-cutting boolean filter.
@@ -973,7 +1022,11 @@ const DashboardPage = () => {
       if (platform === null) return true;
       const hasOrder = !!(item?.orderId || item?.order?.orderId);
       if (!hasOrder) return false;
-      return platform === 'web' ? isWebOrigin(item) : !isWebOrigin(item);
+      // BUG-253: Aggregator filter (mirrors channelData predicate)
+      const itemIsAggregator = item.isAggregator === true || item.order?.isAggregator === true;
+      if (platform === 'aggregator') return itemIsAggregator;
+      if (platform === 'pos') return !isWebOrigin(item) && !itemIsAggregator;
+      return platform === 'web' ? isWebOrigin(item) : true;
     };
     STATUS_COLUMNS.forEach(col => {
       // Map fOrderStatus to status ID for enabledStatuses check
@@ -1128,6 +1181,8 @@ const DashboardPage = () => {
 
     if (!searchQuery.trim()) return results;
     const query = searchQuery.toLowerCase().trim();
+    // BUG-332: respect searchOptions setting; empty = no restriction (all fields)
+    const opts = searchOptions?.length ? searchOptions : ['order id', 'table no', 'phone no', 'user id'];
 
     if (activeChannels.includes("dineIn")) {
       // Combine regular tables + walk-in orders for search
@@ -1152,7 +1207,7 @@ const DashboardPage = () => {
           : (ordersForTable[0] || {});
         return {
           ...table,
-          customer: orderData.customer || table.label || "",
+          customer: orderData.customer || "", // BUG-589: removed || table.label fallback — available tables should show "Available" not the table label as customer
           phone: orderData.phone || "",
           status: orderData.status || table.status || "available",
           amount: orderData.amount || table.amount,
@@ -1163,22 +1218,22 @@ const DashboardPage = () => {
       const allSearchableTables = [...enrichedTables, ...walkInSearchItems];
       
       results.tables = searchItems(allSearchableTables, query, item => ({
-        id: item.id,
-        all: [item.label || item.id, item.customer, item.phone]
+        id: item.label, // BUG-584: exact match on display label, DB ID never used in search
+        all: [opts.includes('table no') && item.label, opts.includes('user id') && item.customer, opts.includes('phone no') && item.phone].filter(Boolean) // BUG-332 BUG-584
       }));
     }
 
     if (activeChannels.includes("delivery")) {
       results.delivery = searchItems(deliveryOrders, query, item => ({
         id: String(item.orderId),
-        all: [item.orderNumber, item.customer, item.phone]
+        all: [opts.includes('order id') && item.orderNumber, opts.includes('user id') && item.customer, opts.includes('phone no') && item.phone].filter(Boolean) // BUG-332
       }));
     }
 
     if (activeChannels.includes("takeAway")) {
       results.takeAway = searchItems(takeAwayOrders, query, item => ({
         id: String(item.orderId),
-        all: [item.orderNumber, item.customer, item.phone]
+        all: [opts.includes('order id') && item.orderNumber, opts.includes('user id') && item.customer, opts.includes('phone no') && item.phone].filter(Boolean) // BUG-332
       }));
     }
 
@@ -1189,13 +1244,17 @@ const DashboardPage = () => {
         guest: room.customer || room.guestName || (room.status === 'available' ? 'Available' : ''),
       }));
       results.rooms = searchItems(enrichedRooms, query, item => ({
-        id: item.id,
-        all: [item.id, item.guestName || item.guest || ""]
+        id: item.label, // BUG-584 BUG-576: exact match on room display label, DB ID never used
+        all: [
+          opts.includes('table no') && item.label,                          // BUG-576 BUG-584: room number e.g. "109"
+          opts.includes('user id') && (item.guestName || item.guest || ''), // BUG-332: guest name
+          opts.includes('phone no') && (item.order?.phone || ''),           // BUG-586: guest phone via order
+        ].filter(Boolean)
       }));
     }
 
     return results;
-  }, [searchQuery, activeChannels, allTablesList, allRoomsList, deliveryOrders, takeAwayOrders, walkInOrders, orderItemsByTableId]);
+  }, [searchQuery, activeChannels, allTablesList, allRoomsList, deliveryOrders, takeAwayOrders, walkInOrders, orderItemsByTableId, searchOptions]); // BUG-332: added searchOptions
 
   const matchingTableIds = useMemo(() => getMatchingIds(searchQuery, searchResults.tables), [searchQuery, searchResults]);
   const matchingRoomIds = useMemo(() => getMatchingIds(searchQuery, searchResults.rooms), [searchQuery, searchResults]);
@@ -1214,6 +1273,7 @@ const DashboardPage = () => {
 
   // --- Handlers ---
   const toggleSnooze = (orderId) => {
+    soundManager.toggleOrderMute(String(orderId)); // BUG-453 Fix B: audio mute follows the visual snooze toggle (OD-453-03)
     setSnoozedOrders(prev => {
       const newSet = new Set(prev);
       if (newSet.has(orderId)) {
@@ -1287,7 +1347,8 @@ const DashboardPage = () => {
   }, []);
 
   // --- Cancel order confirmed from modal ---
-  const handleCancelOrderConfirm = useCallback(async (reason) => {
+  // CR-165: accept (reason, note) — note used only for Razorpay refund; backward-compatible
+  const handleCancelOrderConfirm = useCallback(async (reason, note = '') => {
     if (!cancelOrderEntry) return;
 
     const order = getOrderDataForEntry(cancelOrderEntry);
@@ -1304,8 +1365,85 @@ const DashboardPage = () => {
       console.error('[CancelOrder] Failed:', err);
     }
 
+    // CR-165: Trigger A — auto-refund for Razorpay PG orders
+    if (order.razorpayOrderId) {
+      try {
+        await cancelAndRefund(order.orderId, reason?.reasonText || String(reason), note);
+        toast.success("Refund initiated via Razorpay."); // CR-165 FIX: sonner expects string, not {title,desc}
+      } catch (err) {
+        console.error('[CR-165] Refund failed after cancel:', err);
+        toast.error("Order cancelled but refund could not be initiated. Contact support."); // CR-165 FIX
+      }
+    }
+
     setCancelOrderEntry(null);
   }, [cancelOrderEntry, getOrderDataForEntry, permissions, waitForOrderRemoval]);
+
+  // CR-106: Aggregator order handlers
+  const handleAggregatorAccept = useCallback(async (order, prepTimeMins) => {
+    try {
+      await updateAggregatorOrderStatus({
+        order_id: order.orderId,
+        urban_order_id: order.urbanOrderId,
+        new_status: 'Acknowledged',
+        message: 'Success',
+        extra: { prep_time_mins: prepTimeMins },
+      });
+    } catch (err) {
+      console.error('[Dashboard] Aggregator accept failed:', err);
+      toast.error('Failed to accept order — please retry'); // BUG-254
+    }
+  }, []);
+
+  const handleAggregatorReject = useCallback(async (reasonCode, message) => {
+    if (!aggregatorRejectOrder) return;
+    try {
+      await updateAggregatorOrderStatus({
+        order_id: aggregatorRejectOrder.orderId,
+        urban_order_id: aggregatorRejectOrder.urbanOrderId,
+        new_status: 'Cancelled',
+        message: message || 'Order rejected',
+        reason_code: reasonCode,
+      });
+    } catch (err) {
+      console.error('[Dashboard] Aggregator reject failed:', err);
+      toast.error('Failed to reject order — please retry'); // BUG-254
+    } finally {
+      setAggregatorRejectOrder(null);
+    }
+  }, [aggregatorRejectOrder]);
+
+  const handleAggregatorReady = useCallback(async (order) => {
+    try {
+      await updateAggregatorOrderStatus({
+        order_id: order.orderId,
+        urban_order_id: order.urbanOrderId,
+        new_status: 'Food Ready',
+        message: 'Success',
+      });
+    } catch (err) {
+      console.error('[Dashboard] Aggregator ready failed:', err);
+      toast.error('Failed to mark ready — please retry'); // BUG-254
+    }
+  }, []);
+
+  const handleAggregatorDispatch = useCallback(async (riderName, riderPhone) => {
+    if (!aggregatorDispatchOrder) return;
+    try {
+      await updateAggregatorOrderStatus({
+        order_id: aggregatorDispatchOrder.orderId,
+        urban_order_id: aggregatorDispatchOrder.urbanOrderId,
+        new_status: 'Dispatched',
+        message: 'Order dispatched',
+        extra: { rider_name: riderName, rider_phone_number: riderPhone },
+      });
+    } catch (err) {
+      console.error('[Dashboard] Aggregator dispatch failed:', err);
+      toast.error('Failed to dispatch order — please retry'); // BUG-254
+    } finally {
+      setAggregatorDispatchOrder(null);
+    }
+  }, [aggregatorDispatchOrder]);
 
   const handleSearchSelect = (selection) => {
     const { type, data } = selection;
@@ -1340,6 +1478,11 @@ const DashboardPage = () => {
       setCheckInRoom(tableEntry);
       return;
     }
+    // CR-411: cart carries forward on table switch — no remount (reverses BUG-452 OD-452-01=B).
+    // Modal flag resets kept: belt-and-braces even without remount.
+    if (orderEntryType !== null) {
+      setInitialShowMerge(false); setInitialShowShift(false); setInitialShowPayment(false); setInitialTransferItem(null);
+    }
     setOrderEntryTable(tableEntry);
     if (tableEntry.orderType === 'takeAway') {
       setOrderEntryType('takeAway');
@@ -1360,6 +1503,11 @@ const DashboardPage = () => {
   };
 
   const handleOrderTypeChange = (newType) => {
+    // CR-411: cart carries forward on type switch — no remount (reverses BUG-452 OD-452-01=B).
+    // Modal flag resets kept: belt-and-braces even without remount.
+    if (orderEntryType !== null) {
+      setInitialShowMerge(false); setInitialShowShift(false); setInitialShowPayment(false); setInitialTransferItem(null);
+    }
     // Walk-In orders don't use physical tables - they create dynamic tables
     // TakeAway and Delivery also don't need physical tables
     if (newType === "walkIn" || newType === "takeAway" || newType === "delivery") {
@@ -1369,10 +1517,15 @@ const DashboardPage = () => {
   };
 
   const handleCloseOrderEntry = () => {
+    // CR-411: clear saved cart for current context so re-open always starts fresh (OD-411-01=A).
+    const cartKey = orderEntryTable?.id || orderEntryType;
+    if (cartKey) setCartsByTable(prev => ({ ...prev, [cartKey]: [] }));
     setOrderEntryTable(null);
     setOrderEntryType(null);
     setInitialShowPayment(false);
     setInitialTransferItem(null);
+    setInitialShowMerge(false); // BUG-372
+    setInitialShowShift(false); // BUG-372 Transfer
   };
 
   // CR-008 #4 Phase A / Bucket D1 (May-2026): "Stay on Order Entry After
@@ -1415,49 +1568,7 @@ const DashboardPage = () => {
     }
   }, [orderEntryTable]);
 
-  // PROD-BUG-001 (2026-05-20): Auto Settle — when enabled, automatically
-  // settle prepaid (non-PayLater) orders at fOrderStatus=5 without requiring
-  // a manual Settle click. Uses the same completePrepaidOrder() API as the
-  // manual Settle button. In-flight Set prevents duplicate calls across
-  // re-renders. PayLater orders are explicitly excluded.
-  const autoSettleInFlight = useRef(new Set());
-  useEffect(() => {
-    let autoSettleOn = false;
-    try {
-      autoSettleOn = localStorage.getItem('mygenie_auto_settle_enabled') === 'true';
-    } catch (_) {}
-    if (!autoSettleOn) return;
-
-    const candidates = orders.filter(
-      (o) =>
-        o.fOrderStatus === 5 &&
-        o.paymentType === 'prepaid' &&
-        o.paymentMethod?.toLowerCase() !== 'paylater' &&
-        !autoSettleInFlight.current.has(o.orderId)
-    );
-
-    candidates.forEach((o) => {
-      autoSettleInFlight.current.add(o.orderId);
-      console.log('[AutoSettle] Settling prepaid order:', o.orderId);
-      completePrepaidOrder(
-        o.orderId,
-        o.serviceTax || 0,
-        o.tipAmount || 0,
-        false // not PayLater
-      )
-        .then(() => {
-          handlePrepaidSettleSuccess(o.orderId);
-        })
-        .catch((err) => {
-          console.error('[AutoSettle] Failed for order:', o.orderId, err?.message);
-        })
-        .finally(() => {
-          // Remove from in-flight after 10s to allow retry if socket didn't clear
-          setTimeout(() => autoSettleInFlight.current.delete(o.orderId), 10000);
-        });
-    });
-  }, [orders, handlePrepaidSettleSuccess]);
-
+  // BUG-273: autoSettleQueue + processAutoSettleQueue + enqueue useEffect + cleanup useEffect removed
   const handleBillClick = (tableEntry) => {
     handleTableClick(tableEntry);
     setInitialShowPayment(true);
@@ -1465,10 +1576,8 @@ const DashboardPage = () => {
 
   // Handler for food transfer from Order Card - opens Order Entry with transfer modal
   const handleFoodTransfer = (order, item, tableEntry) => {
-    // Open Order Entry for this table/order
+    setInitialTransferItem(item); // BUG-372: set state BEFORE navigation to avoid timing issue
     handleTableClick(tableEntry);
-    // Set the item to trigger transfer modal in OrderEntry
-    setInitialTransferItem(item);
   };
 
   // Handler for marking order as ready
@@ -1563,19 +1672,43 @@ const DashboardPage = () => {
                        pop-out-local 5-min hide-set (R-SNOOZE-9)
             • View    → handleTableClick (existing OrderEntry open)
           No new endpoints. No audio. No socket/contract change. */}
-      <ScanOrderPopOut
+      {/* CR-056: Gate scan popup on restaurant setting */}
+      {settings?.showScanPopup !== false && (
+        <ScanOrderPopOut
+          orders={orders}
+          snoozedOrders={snoozedOrders}
+          onToggleSnooze={toggleSnooze}
+          onAccept={handleConfirmOrder}
+          onReject={handleCancelOrderFromCard}
+          onEdit={handleTableClick}
+          currencySymbol={currencySymbol}
+          suppressed={Boolean(orderEntryType) || Boolean(cancelOrderEntry)}
+        />
+      )}
+      {/* CR-106: Aggregator order popup (Swiggy/Zomato) */}
+      <AggregatorOrderPopOut
         orders={orders}
-        snoozedOrders={snoozedOrders}
-        onToggleSnooze={toggleSnooze}
-        onAccept={handleConfirmOrder}
-        onReject={handleCancelOrderFromCard}
-        onEdit={handleTableClick}
+        onAccept={handleAggregatorAccept}
+        onReject={(order) => setAggregatorRejectOrder(order)}
         currencySymbol={currencySymbol}
         suppressed={Boolean(orderEntryType) || Boolean(cancelOrderEntry)}
       />
+      <AggregatorRejectModal
+        open={!!aggregatorRejectOrder}
+        onClose={() => setAggregatorRejectOrder(null)}
+        onConfirm={handleAggregatorReject}
+      />
+      <AggregatorDispatchModal
+        open={!!aggregatorDispatchOrder}
+        onClose={() => setAggregatorDispatchOrder(null)}
+        onConfirm={handleAggregatorDispatch}
+      />
       <Sidebar
         isExpanded={sidebarExpanded}
-        setIsExpanded={setSidebarExpanded}
+        setIsExpanded={(v) => { // BUG-358: persist sidebar state
+          setSidebarExpanded(v);
+          localStorage.setItem('mygenie_sidebar_expanded', String(v));
+        }}
         // CR-041: onOpen props removed (panels migrated to routes)
         onRefresh={handleRefreshAll}
         isRefreshing={isRefreshing}
@@ -1633,6 +1766,12 @@ const DashboardPage = () => {
           setPlatform={setPlatform}
           webCount={platformCounts.web}
           posCount={platformCounts.pos}
+          channelActiveFirst={channelActiveFirst}
+          onChannelActiveFirstToggle={() => { // CR-429
+            const next = !channelActiveFirst;
+            setChannelActiveFirst(next);
+            localStorage.setItem('mygenie_channel_active_first', String(next));
+          }}
         />
 
         <main className="flex-1 p-2 overflow-auto flex">
@@ -1659,6 +1798,7 @@ const DashboardPage = () => {
                 }
                 viewType={activeView === 'table' ? 'table' : 'order'}
                 groupingMode={dashboardView}
+                activeFirst={dashboardView === 'channel' && channelActiveFirst} // CR-429
                 onItemClick={handleTableClick}
                 onMarkReady={handleMarkReady}
                 onMarkServed={handleMarkServed}
@@ -1669,13 +1809,23 @@ const DashboardPage = () => {
                 onConfirmOrder={handleConfirmOrder}
                 onUpdateStatus={handleUpdateTableStatus}
                 onFoodTransfer={handleFoodTransfer}
+                onAggregatorReady={handleAggregatorReady}              
+                onAggregatorDispatch={(order) => setAggregatorDispatchOrder(order)} 
+                onTableShift={(o) => { // BUG-372 Transfer: wire for ChannelColumnsLayout
+                  const tableEntry = allTablesList?.find(t => t.orderId === o.orderId);
+                  if (tableEntry) { setInitialShowShift(true); handleTableClick(tableEntry); }
+                }}
+                onMergeOrder={(order) => { // BUG-372 Merge: wire for ChannelColumnsLayout
+                  const tableEntry = allTablesList?.find(t => t.orderId === order.orderId);
+                  if (tableEntry) { setInitialShowMerge(true); handleTableClick(tableEntry); }
+                }}
                 hasPermission={hasPermission}
                 snoozedOrders={snoozedOrders}
                 currencySymbol={currencySymbol}
                 isTableEngaged={isTableEngaged}
                 isOrderEngaged={isOrderEngaged}
                 searchQuery={searchQuery}
-                matchingIds={matchingTableIds}
+                matchingIds={matchingGridIds} // BUG-587: was matchingTableIds — rooms/delivery/takeaway never highlighted; matchingGridIds is the union of all channel IDs
                 onHideColumn={(columnId) => {
                   // Hide column AND corresponding filter based on current view
                   if (dashboardView === 'status') {
@@ -1842,8 +1992,12 @@ const DashboardPage = () => {
                           onBillClick={() => handleBillClick(table)}
                           onCancelOrder={handleCancelOrderFromCard}
                           onItemStatusChange={handleItemStatusChange}
-                          onMergeOrder={(o) => console.log('[OrderCard] Merge order:', o.orderId)}
-                          onTableShift={(o) => console.log('[OrderCard] Shift table:', o.orderId)}
+                          onMergeOrder={(order) => { // BUG-372: use table from closure
+                            setInitialShowMerge(true); handleTableClick(table);
+                          }}
+                          onTableShift={(o) => { // BUG-372 Transfer: use table from closure
+                            setInitialShowShift(true); handleTableClick(table);
+                          }}
                           onFoodTransfer={(o, item) => handleFoodTransfer(o, item, table)}
                           onPostSettleSuccess={handlePrepaidSettleSuccess}
                         />
@@ -1875,6 +2029,8 @@ const DashboardPage = () => {
                         onCancelOrder={handleCancelOrderFromCard}
                         onItemStatusChange={handleItemStatusChange}
                         onPostSettleSuccess={handlePrepaidSettleSuccess}
+                        onAggregatorReady={handleAggregatorReady}
+                        onAggregatorDispatch={(order) => setAggregatorDispatchOrder(order)}
                       />
                     ))
                   }
@@ -1930,6 +2086,8 @@ const DashboardPage = () => {
             onCartChange={(key, items) => setCartsByTable(prev => ({ ...prev, [key]: items }))}
             initialShowPayment={initialShowPayment}
             initialTransferItem={initialTransferItem}
+            initialShowMerge={initialShowMerge}
+            initialShowShift={initialShowShift}
             onCollectBillStayOnOrder={handleCollectBillStayOnOrder}
           />
         )}
@@ -1956,6 +2114,10 @@ const DashboardPage = () => {
             reasons={getOrderCancellationReasons()}
             onClose={() => setCancelOrderEntry(null)}
             onCancel={handleCancelOrderConfirm}
+            mode={(() => {
+              const order = getOrderDataForEntry(cancelOrderEntry);
+              return order?.razorpayOrderId ? 'refund' : 'cancel'; // CR-165
+            })()}
           />
         )}
       </div>

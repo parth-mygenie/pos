@@ -690,6 +690,14 @@ const OrderDetailSheet = ({ isOpen, onClose, order, tabId }) => {
                       </span>
                     </div>
                   )}
+                  {/* BUG-272: Partial payment leg badges */}
+                  {!displayData.isCancelled && displayData.paymentMethod?.toLowerCase() === 'partial' && (displayData.cashAmount > 0 || displayData.cardAmount > 0 || displayData.upiAmount > 0) && (
+                    <div className="flex items-center justify-end gap-1.5 -mt-1 mb-1">
+                      {displayData.cashAmount > 0 && <span className="text-[10px] font-medium px-1.5 py-0.5 rounded border bg-emerald-50 text-emerald-700 border-emerald-200">Cash ₹{displayData.cashAmount.toLocaleString()}</span>}
+                      {displayData.cardAmount > 0 && <span className="text-[10px] font-medium px-1.5 py-0.5 rounded border bg-blue-50 text-blue-700 border-blue-200">Card ₹{displayData.cardAmount.toLocaleString()}</span>}
+                      {displayData.upiAmount > 0 && <span className="text-[10px] font-medium px-1.5 py-0.5 rounded border bg-violet-50 text-violet-700 border-violet-200">UPI ₹{displayData.upiAmount.toLocaleString()}</span>}
+                    </div>
+                  )}
                   {/* Show Cancelled indicator for cancelled orders */}
                   {displayData.isCancelled && !effectiveIsMerged && (
                     <div className="flex items-center justify-between text-sm">

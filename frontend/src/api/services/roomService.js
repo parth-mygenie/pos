@@ -57,6 +57,7 @@ export const checkIn = async (params) => {
   // BUG-092: Send CRM customer_id if available (backend ignores until ready)
   if (params.customerId) {
     fd.append('customer_id', String(params.customerId));
+    fd.append('cust_membership_id', String(params.customerId)); // CR-127: parity with order flow
   }
 
   // ── Rooms (bracket-indexed) ─────────────────────────────────────────────────
@@ -114,7 +115,7 @@ export const checkIn = async (params) => {
   fd.append('order_note', params.orderNote || '');
 
   // ── GST / Firm block — always sent (empty when not Corporate) ──────────────
-  fd.append('gst_tax', '0.00');
+  fd.append('gst_tax', to2dp(params.gstTax ?? 0)); // BUG-410: use computed accommodation GST (was hardcoded '0.00')
   fd.append('firm_name', params.firmName || '');
   fd.append('firm_gst', params.firmGst || '');
 
@@ -141,5 +142,49 @@ export const checkIn = async (params) => {
  */
 export const getRoomList = async () => {
   const res = await api.get(API_ENDPOINTS.GET_ROOM_LIST);
+  return res.data;
+};
+
+// CR-163: Split selected items from room order into a new walk-in order.
+// Backend creates the destination order automatically.
+// customer_name is sent so the created order shows as "Room {N}" on Dashboard;
+// backend uses it if supported, falls back to Walk-In label if not.
+export const splitRoomOrder = async ({ orderId, orderDetailIds, customerName, remark = '', targetTableId = null }) => {
+  const payload = {
+    order_id: orderId,
+    order_detail_ids: orderDetailIds,
+    ...(customerName ? { customer_name: customerName } : {}),
+    remark,
+    ...(targetTableId ? { target_table_id: targetTableId } : {}), // CR-163: Path A — land on existing free table
+  };
+  const res = await api.post(API_ENDPOINTS.SPLIT_ROOM_ORDER, payload);
+  return res.data;
+};
+
+// CR-163: Move a split order (table_id: 0) onto a dynamically created dine-in table.
+// Called after storeTable() on Path B. old_table_id = 0 for newly split orders.
+export const switchOrderTable = async ({ orderId, oldTableId, newTableId }) => {
+  const res = await api.post(API_ENDPOINTS.ORDER_TABLE_SWITCH, {
+    order_id: orderId,
+    old_table_id: oldTableId,
+    new_table_id: newTableId,
+  });
+  return res.data;
+};
+
+// CR-162: Record a mid-stay partial payment against an active room order.
+// Backend derives restaurant_id from Bearer token — no restaurant_id in payload.
+// payment_mode accepted: cash | upi | card | online | razorpay | neft
+// payment_type: 'interim' for mid-stay (backend default is 'advance' — always override per BE reply 2026-09-10)
+// Returns: { success: true, room_payment_summary: { remaining_room_balance, payments: [...] } }
+export const recordPartialPayment = async ({ roomOrderId, amount, paymentMode, note = '' }) => {
+  const payload = {
+    room_order_id: roomOrderId,
+    payment_amount: amount,
+    payment_mode: paymentMode,
+    payment_type: 'interim', // CR-162: mid-stay partial payment — BE reply 2026-09-10
+    ...(note ? { payment_note: note } : {}),
+  };
+  const res = await api.post(API_ENDPOINTS.ROOM_RECORD_PAYMENT, payload);
   return res.data;
 };

@@ -2,7 +2,7 @@ import React, { useState, useMemo, useRef, useCallback, useEffect } from "react"
 import {
   X, Search, Save, Plus, RotateCcw, Check, AlertCircle,
   Columns3, ChevronDown, ChevronRight, Eye, EyeOff, Table2,
-  ArrowUpDown, Download, Upload, Loader2, Trash2
+  ArrowUpDown, Download, Upload, Loader2, Trash2, ShieldCheck
 } from "lucide-react";
 import { COLORS } from "../../../constants";
 import { useToast } from "../../../hooks/use-toast";
@@ -13,25 +13,30 @@ import * as menuService from "../../../api/services/menuManagementService";
 // tax-required validation rule (item must have GST/VAT + rate>0 when
 // restaurant has GST enabled, except packaged items).
 import { useRestaurant } from "../../../contexts/RestaurantContext";
+import AddonExpandPanel    from "./AddonExpandPanel";    // CR-145
+import VariationExpandPanel from "./VariationExpandPanel"; // CR-145
 
 // ─── Column Definitions ────────────────────────────────────────────
-const ALL_COLUMNS = [
+const BASE_COLUMNS = [
+  // CR-145: food thumbnail — always visible, read-only
+  { key: "productImage", label: "Img", type: "image", width: 52, tier: 1, alwaysVisible: true, readOnly: true },
   // Tier 1
   { key: "productName",      label: "Name",            type: "text",     width: 200, tier: 1, required: true, alwaysVisible: true },
   { key: "categoryId",       label: "Category",        type: "dropdown", width: 170, tier: 1, required: true },
   { key: "basePrice",        label: "Price",            type: "number",   width: 90,  tier: 1, required: true },
+  // CR-145 / owner-2026-08-21: Add-ons + Variations moved right after Price, before Status/Type
+  { key: "addons",           label: "Add-ons",          type: "addon_expand", width: 110, tier: 1 },
+  { key: "variations",       label: "Variations",       type: "var_expand",   width: 110, tier: 1 }, // BUG-A fix: tier 2→1
   { key: "status",           label: "Status",           type: "toggle",   width: 85,  tier: 1 },
   { key: "itemType",         label: "Type",             type: "dropdown", width: 100, tier: 1 },
   // CR-036-FU-02 F4: Tax Type column moved BEFORE Tax % (was reversed). Reading
   // type first then rate matches cashier mental model per owner 2026-06-12.
   { key: "taxType",          label: "Tax Type",         type: "dropdown", width: 95,  tier: 1 },
   { key: "taxPercent",       label: "Tax %",            type: "number",   width: 75,  tier: 1 },
-  // CR-036-FU-02 N2: `itemUnit` promoted from Tier 4 → Tier 1. API already
-  // returns `item_unit` (menuManagementTransform.js:116); the column existed
-  // but was hidden behind Columns picker. Label aligned to "Sold By (Unit)"
-  // matching ProductForm.jsx:307 (single-add view) for consistency.
-  { key: "itemUnit",         label: "Sold By (Unit)",   type: "dropdown", width: 110, tier: 1 },
-  { key: "description",      label: "Description",      type: "textarea", width: 180, tier: 1 },
+  // owner-2026-08-21: itemUnit + description moved to tier 2 (not shown by default)
+  // Note: empty itemUnit → API receives item_unit:"" → backend treats as Piece (safe default)
+  { key: "itemUnit",         label: "Sold By (Unit)",   type: "dropdown", width: 110, tier: 2 },
+  { key: "description",      label: "Description",      type: "textarea", width: 180, tier: 2 },
   { key: "packedFood",       label: "Packaged Item",    type: "yesno",    width: 105, tier: 1 },
   { key: "isInventory",      label: "Inventory",        type: "yesno",    width: 90,  tier: 1 },
   // Tier 2
@@ -46,7 +51,7 @@ const ALL_COLUMNS = [
   { key: "complementaryPrice", label: "Comp. Price",    type: "number",   width: 95,  tier: 2 },
   { key: "stockOut",         label: "Out of Stock",     type: "yesno",    width: 100, tier: 2 },
   { key: "isDisabled",       label: "Hidden from POS",  type: "yesno",    width: 120, tier: 2 },
-  { key: "taxCalc",          label: "Tax Calc",         type: "dropdown", width: 100, tier: 2 },
+  // BUG-359: taxCalc column removed — always Exclusive, Inclusive not applicable
   // Tier 3
   { key: "prepTimeMin",      label: "Prep Time",        type: "number",   width: 85,  tier: 3 },
   { key: "serveTimeMin",     label: "Serve Time",       type: "number",   width: 90,  tier: 3 },
@@ -61,8 +66,18 @@ const ALL_COLUMNS = [
   { key: "allergen",         label: "Allergens",        type: "text",     width: 120, tier: 4 },
   { key: "kcal",             label: "Kcal",             type: "number",   width: 70,  tier: 4 },
   { key: "portionSize",      label: "Portion Size",     type: "text",     width: 100, tier: 4 },
-  // CR-036-FU-02 N2: itemUnit moved up to Tier 1 (see above near taxType/taxPercent block).
 ];
+
+// CR-140 GAP-6: Aggregator-specific columns — injected when menuType === 'Aggregator'
+const AGGR_COLUMNS = [
+  { key: 'swiggy',            label: 'Swiggy',           type: 'yesno',    width: 80,  tier: 1 },
+  { key: 'zomato',            label: 'Zomato',           type: 'yesno',    width: 80,  tier: 1 },
+  { key: 'clientId',          label: 'Brand',            type: 'dropdown', width: 120, tier: 1 },
+  { key: 'swiggyPackingChrg', label: 'Swiggy Pack Chrg', type: 'yesno',   width: 130, tier: 1 }, // BUG-326
+];
+
+const getColumns = (menuType) =>
+  menuType === 'Aggregator' ? [...BASE_COLUMNS, ...AGGR_COLUMNS] : BASE_COLUMNS;
 
 const TIER_LABELS = { 1: "Default", 2: "Pricing & Availability", 3: "Operations", 4: "Info" };
 const ITEM_TYPE_OPTIONS = [
@@ -124,6 +139,15 @@ const buildRow = (f, isNew = false) => ({
   itemUnit: f.itemUnit || "",
   itemUnitPrice: f.itemUnitPrice || 0,
   foodFor: f.foodFor || "Normal",
+  // CR-140 GAP-6: aggregator fields
+  swiggy:   f.swiggy   ? 'Yes' : 'No',
+  zomato:   f.zomato   ? 'Yes' : 'No',
+  clientId: f.clientId ?? 0,
+  swiggyPackingChrg: f.swiggyPackingChrg ? 'Yes' : 'No', // BUG-326
+  // CR-145: nested arrays and image
+  addonIds:     (f.addOns || []).map(a => (typeof a === 'object' ? a.id : a)),
+  variations:   f.variations || [],
+  productImage: f.productImage || null,
 });
 
 // ─── Build food_info payload from row ──────────────────────────────
@@ -135,6 +159,14 @@ const buildPayload = (row) => ({
   discount: Number(row.discount) || 0,
   discount_type: row.discountType || "percent",
   food_for: row.foodFor || "Normal",
+  // CR-140 GAP-6: aggregator platform fields
+  ...(row.foodFor === 'Aggregator' ? {
+    swiggy: row.swiggy === 'Yes' ? 'YES' : 'NO',
+    zomato: row.zomato === 'Yes' ? 'YES' : 'NO',
+    client: row.clientId ?? 0,
+    is_packaged_good:    row.packedFood        === 'Yes' ? 1     : 0,    // BUG-326
+    swiggy_packing_chrg: row.swiggyPackingChrg === 'Yes' ? 'YES' : 'NO', // BUG-326
+  } : {}),
   dinein: row.dineIn === "Yes" ? "Yes" : "No",
   delivery: row.delivery === "Yes" ? "Yes" : "No",
   takeaway: row.takeaway === "Yes" ? "Yes" : "No",
@@ -165,16 +197,43 @@ const buildPayload = (row) => ({
   // CR-010: Weight-based billing — unit price always equals base price
   item_unit: row.itemUnit || '',
   item_unit_price: ['Kg','gm','L','ml'].includes(row.itemUnit) ? String(Number(row.basePrice) || 0) : '',
+  portion_size: row.portionSize || '', // BUG-248: was missing from payload
+  // CR-145: addon_ids — omit key entirely for rows where addonIds never loaded (P6c: omit = no change)
+  ...(row.addonIds !== undefined ? { addon_ids: row.addonIds } : {}),
+  // BUG-371: include updated variation prices — key 'variations' (plural) + 'label' field to match backend/ProductForm contract
+  ...(row.variations && row.variations.length > 0 ? {
+    variations: row.variations.map(g => ({
+      name: g.name,
+      type: g.type || 'single',
+      required: g.required ? 'on' : 'off',
+      min: g.min || 0,
+      max: g.max || 0,
+      values: (g.values || []).map(v => ({ label: v.name, optionPrice: String(v.price ?? 0) })),
+    }))
+  } : {}),
 });
 
 // ─── Main Component ────────────────────────────────────────────────
-const BulkEditor = ({ foods = [], categories = [], menuType = "Normal", isLoading = false, onRefresh, onClose }) => {
+const BulkEditor = ({ foods = [], categories = [], menuType = "Normal", clients = [], addons = [], isLoading = false, onRefresh, onClose, deleteReasons = [] }) => { // CR-140, CR-145: +addons // CR-159: +deleteReasons
   // CR-036-FU-03 F3: restaurant.tax.gstStatus drives the tax-required rule.
-  const { restaurant } = useRestaurant();
+  const { restaurant, currencySymbol } = useRestaurant(); // CR-145: +currencySymbol
   const gstRequired = restaurant?.tax?.gstStatus === true;
   const { toast } = useToast();
+  // CR-145: expand sub-row state
+  const [expandedRowId,   setExpandedRowId]   = useState(null);
+  const [expandedRowType, setExpandedRowType] = useState(null);
+  const toggleExpand = useCallback((rowId, type) => {
+    if (expandedRowId === rowId && expandedRowType === type) {
+      setExpandedRowId(null); setExpandedRowType(null);
+    } else {
+      setExpandedRowId(rowId); setExpandedRowType(type);
+    }
+  }, [expandedRowId, expandedRowType]);
+  const closeExpand = useCallback(() => {
+    setExpandedRowId(null); setExpandedRowType(null);
+  }, []);
   const [visibleCols, setVisibleCols] = useState(() =>
-    ALL_COLUMNS.reduce((acc, c) => ({ ...acc, [c.key]: c.tier === 1 }), {})
+    getColumns("Normal").reduce((acc, c) => ({ ...acc, [c.key]: c.tier === 1 }), {})
   );
   const [showColPicker, setShowColPicker] = useState(false);
   const [collapsedTiers, setCollapsedTiers] = useState({ 1: false, 2: true, 3: true, 4: true });
@@ -183,12 +242,23 @@ const BulkEditor = ({ foods = [], categories = [], menuType = "Normal", isLoadin
   const [search, setSearch] = useState("");
   const [sortCol, setSortCol] = useState(null);
   const [sortDir, setSortDir] = useState("asc");
+  // CR-374: filter panel state
+  const [filterStatus,     setFilterStatus]     = useState('all');  // 'all'|'active'|'inactive'
+  const [filterType,       setFilterType]       = useState('all');  // 'all'|'veg'|'nonveg'|'egg'|'jain'
+  const [filterCategoryId, setFilterCategoryId] = useState(null);   // null | categoryId number
   const [saving, setSaving] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [importing, setImporting] = useState(false);
   const [showExportMenu, setShowExportMenu] = useState(false);
+  // CR-159: bulk delete state — non-Aggregator only
+  const [selectedIds,      setSelectedIds]      = useState(new Set());
+  const [bulkDeleteOpen,   setBulkDeleteOpen]   = useState(false);
+  const [bulkDeleteReason, setBulkDeleteReason] = useState('');
+  const [bulkDeleting,     setBulkDeleting]     = useState(false);
   // CR-027 Phase 3 (OD-025-3 hybrid): drawer listing failed rows when failures > 3
   const [showErrors, setShowErrors] = useState(false);
+  // CR-158: null = not yet run, 0 = all clean, N = N rows with tax issues
+  const [validateIssueCount, setValidateIssueCount] = useState(null);
   const exportRef = useRef(null);
   const fileInputRef = useRef(null);
   // CR-036: ref to grid scroll container — used to scroll-to-top on Add Item
@@ -202,6 +272,16 @@ const BulkEditor = ({ foods = [], categories = [], menuType = "Normal", isLoadin
   //   pendingImport holds the import result + dirty count; rendered as a
   //   shadcn <Dialog> below; resolved by Continue (refresh) / Cancel (preserve).
   const [pendingImport, setPendingImport] = useState(null);
+
+  // CR-140 E: Sync visibleCols when menuType switches (adds/removes aggregator columns)
+  useEffect(() => {
+    setVisibleCols(getColumns(menuType).reduce((acc, c) => ({ ...acc, [c.key]: c.tier === 1 }), {}));
+  }, [menuType]); // CR-140
+  useEffect(() => { // CR-374: OD-374-03 — reset filters on menu type switch
+    setFilterStatus('all');
+    setFilterType('all');
+    setFilterCategoryId(null);
+  }, [menuType]);
   // Aggregated busy flag drives the backdrop overlay (LoaderOverlay below).
   // Excludes `saving` because per-button save spinner is enough; the overlay
   // is meant for load / import / export only (no in-grid action available
@@ -254,6 +334,12 @@ const BulkEditor = ({ foods = [], categories = [], menuType = "Normal", isLoadin
     [categories]
   );
 
+  // CR-140 D1: brand options for clientId dropdown
+  const clientOptions = useMemo(() =>
+    [{ value: 0, label: 'Main Brand' }, ...(clients || []).map(c => ({ value: c.id, label: c.name }))],
+    [clients]
+  );
+
   // ─── Dirty detection ─────────────────────────────────────────────
   const isDirty = useCallback((row, field) => {
     if (row._isNew) return true;
@@ -263,7 +349,7 @@ const BulkEditor = ({ foods = [], categories = [], menuType = "Normal", isLoadin
       itemType:    () => (o.itemType ?? 0) !== row.itemType,
       taxPercent:  () => (o.tax?.percentage ?? 0) !== Number(row.taxPercent),
       taxType:     () => (o.tax?.type || "GST") !== row.taxType,
-      categoryId:  () => o.categoryId !== Number(row.categoryId),
+      categoryId:  () => Number(o.categoryId ?? 0) !== Number(row.categoryId ?? 0), // BUG-323: null-safe coercion — categoryId=0 was falsy (0||null=null), causing false dirty on 37/108 Aggregator foods
       basePrice:   () => o.basePrice !== Number(row.basePrice),
       description: () => (o.description || "") !== (row.description || ""),
       productName: () => o.productName !== row.productName,
@@ -282,14 +368,62 @@ const BulkEditor = ({ foods = [], categories = [], menuType = "Normal", isLoadin
       takeawayCharge: () => (o.takeawayCharge || 0) !== Number(row.takeawayCharge),
       deliveryCharge: () => (o.deliveryCharge || 0) !== Number(row.deliveryCharge),
       itemCode:    () => (o.itemCode || "") !== (row.itemCode || ""),
-      sortOrder:   () => (o.sortOrder || 0) !== Number(row.sortOrder),
+      sortOrder:   () => Number(o.sortOrder || 0) !== Number(row.sortOrder), // BUG-323-B: string "0" from API is truthy, causing "0" !== 0 type mismatch
       allergen:    () => (o.allergen || "") !== (row.allergen || ""),
       kcal:        () => (o.kcal || 0) !== Number(row.kcal),
+      // BUG-248: 9 missing isDirty checks — edits to these columns were silently lost
+      packedFood:  () => (o.packedFood ? "Yes" : "No") !== row.packedFood,
+      isInventory: () => (o.isInventory ? "Yes" : "No") !== row.isInventory,
+      stockOut:    () => (o.isOutOfStock ? "Yes" : "No") !== row.stockOut,
+      isDisabled:  () => (o.isDisabled ? "Yes" : "No") !== row.isDisabled,
+      taxCalc:     () => (o.taxCalc || "Exclusive") !== row.taxCalc,
+      itemUnit:    () => (o.itemUnit || "") !== (row.itemUnit || ""),
+      availableTimeStart: () => (o.availableTimeStart || "00:00:00") !== row.availableTimeStart,
+      availableTimeEnd:   () => (o.availableTimeEnd || "23:59:59") !== row.availableTimeEnd,
+      portionSize: () => (o.portionSize || "") !== (row.portionSize || ""),
+      // CR-140 GAP-6: Aggregator platform fields dirty detection
+      swiggy:            () => (o.swiggy   ? 'Yes' : 'No') !== row.swiggy,
+      zomato:            () => (o.zomato   ? 'Yes' : 'No') !== row.zomato,
+      clientId:          () => (o.clientId ?? 0)            !== row.clientId,
+      swiggyPackingChrg: () => (o.swiggyPackingChrg ? 'Yes' : 'No') !== row.swiggyPackingChrg, // BUG-326
+      // CR-145: array dirty — sorted numeric comparison
+      addons: () => {
+        const orig = JSON.stringify([...(o.addOns || []).map(a => typeof a === 'object' ? a.id : a)].sort((a,b) => a-b));
+        const curr = JSON.stringify([...(row.addonIds || [])].sort((a,b) => a-b));
+        return orig !== curr;
+      },
+      variations: () => { // BUG-371: detect variation price changes
+        if (!row._original?.variations || !row.variations) return false;
+        return JSON.stringify(row.variations) !== JSON.stringify(row._original.variations);
+      },
+      productImage: () => false, // CR-145: read-only
     };
-    return checks[field] ? checks[field]() : false;
+    return checks[field]?.() ?? false;
   }, []);
 
-  const isRowDirty = useCallback((row) => ALL_COLUMNS.some(c => isDirty(row, c.key)), [isDirty]);
+  // CR-159: Aggregator menu does not support delete-bulk endpoint
+  const showBulkDelete = menuType !== 'Aggregator';
+
+  const handleBulkDeleteConfirm = async () => {
+    if (!bulkDeleteReason || selectedIds.size === 0) return;
+    setBulkDeleting(true);
+    try {
+      await menuService.deleteFoodBulk([...selectedIds], bulkDeleteReason, menuType);
+      toast({ title: 'Deleted', description: `${selectedIds.size} item(s) deleted.` });
+      setSelectedIds(new Set());
+      setBulkDeleteOpen(false);
+      setBulkDeleteReason('');
+      onRefresh();
+    } catch (err) {
+      const msg = err?.response?.data?.message || err.readableMessage || 'Delete failed';
+      console.error('[CR-159] Bulk delete error:', err);
+      toast({ title: 'Delete failed', description: 'Unable to delete items at this time. Please try again or contact support.', variant: 'destructive' });
+      setBulkDeleteOpen(false);
+      setBulkDeleteReason('');
+    } finally { setBulkDeleting(false); }
+  };
+
+  const isRowDirty = useCallback((row) => getColumns(menuType).some(c => isDirty(row, c.key)), [isDirty, menuType]); // BUG-324: menuType added to deps — stale closure caused Aggregator cols (swiggy/zomato/clientId) to silently skip dirty check
   const dirtyCount = useMemo(() => {
     const c = rows.filter(isRowDirty).length;
     dirtyCountRef.current = c;
@@ -299,6 +433,18 @@ const BulkEditor = ({ foods = [], categories = [], menuType = "Normal", isLoadin
   // ─── Grouping ─────────────────────────────────────────────────────
   const groupedRows = useMemo(() => {
     let result = rows;
+    // CR-374: status / type / category filter passes (new rows always pass)
+    if (filterStatus !== 'all') {
+      const want = filterStatus === 'active' ? 1 : 0;
+      result = result.filter(r => r._isNew || r.status === want);
+    }
+    if (filterType !== 'all') {
+      const typeMap = { veg: 1, nonveg: 0, egg: 2, jain: 3 };
+      result = result.filter(r => r._isNew || r.itemType === typeMap[filterType]);
+    }
+    if (filterCategoryId !== null) {
+      result = result.filter(r => r._isNew || r.categoryId === filterCategoryId);
+    }
     if (search) {
       const s = search.toLowerCase();
       result = result.filter(r =>
@@ -343,7 +489,7 @@ const BulkEditor = ({ foods = [], categories = [], menuType = "Normal", isLoadin
       items.forEach(item => out.push({ _type: "row", ...item }));
     });
     return out;
-  }, [rows, search, sortCol, sortDir]);
+  }, [rows, search, sortCol, sortDir, filterStatus, filterType, filterCategoryId]); // CR-374
 
   // ─── Handlers ─────────────────────────────────────────────────────
   const updateCell = (rowId, field, value) => {
@@ -357,6 +503,7 @@ const BulkEditor = ({ foods = [], categories = [], menuType = "Normal", isLoadin
       }
       return u;
     }));
+    setValidateIssueCount(null); // CR-158: stale count after edit → reset to "not run"
   };
 
   const toggleSort = (key) => {
@@ -417,6 +564,15 @@ const BulkEditor = ({ foods = [], categories = [], menuType = "Normal", isLoadin
     // packaging implies tax handled outside item-level computation
     // (owner directive 2026-06-12). Applies to both _isNew and existing
     // dirty rows per OQ-F3-2 default.
+    // BUG-391: Aggregator items must always have GST at exactly 5% — unconditional, regardless of restaurant.gstStatus
+    if (menuType === 'Aggregator') {
+      if (row.taxType !== 'GST') {
+        errors.push({ field: 'taxType',    message: 'Aggregator items must use GST tax type' });
+      }
+      if (Number(row.taxPercent) !== 5) {
+        errors.push({ field: 'taxPercent', message: 'Aggregator items must have exactly 5% GST' });
+      }
+    }
     if (gstRequired && row.packedFood !== "Yes") {
       const hasValidTaxType = row.taxType === "GST" || row.taxType === "VAT";
       const hasPositiveRate = Number(row.taxPercent) > 0;
@@ -429,7 +585,47 @@ const BulkEditor = ({ foods = [], categories = [], menuType = "Normal", isLoadin
     return errors;
   };
 
+  // ─── CR-158: Validate Tax (tax-only pre-flight check) ──────────────
+  // Owner Q1: GST/VAT fields only — name/category/price checked by Save only.
+  // Owner Q2: highlight in-place, no auto-scroll.
+  // Owner Q3: issue count shown on button label.
+  // Pure client-side — no API call, no data mutation, no save triggered.
+  const handleValidate = () => {
+    let issueCount = 0;
+    setRows(prev => prev.map(r => {
+      const allErrors = validateRow(r);
+      // Keep only tax field errors (taxType + taxPercent)
+      const taxErrors = allErrors.filter(
+        e => e.field === 'taxType' || e.field === 'taxPercent'
+      );
+      // Preserve any non-tax errors from a prior save attempt (e.g. missing name)
+      const existingNonTax = (r._validationErrors || []).filter(
+        e => e.field !== 'taxType' && e.field !== 'taxPercent'
+      );
+      const merged = [...existingNonTax, ...taxErrors];
+      if (taxErrors.length > 0) issueCount++;
+      return { ...r, _validationErrors: merged.length > 0 ? merged : null };
+    }));
+    setValidateIssueCount(issueCount);
+  };
+
   // ─── Save (batch parallel) ────────────────────────────────────────
+  // BUG-371: update variation price inline in BulkEditor row state
+  const handleVariationPriceChange = useCallback((rowId, gIdx, vIdx, newPrice) => {
+    setRows(prev => prev.map(row => {
+      if (row._id !== rowId) return row;
+      const vars = (row.variations || []).map((g, gi) =>
+        gi !== gIdx ? g : {
+          ...g,
+          values: (g.values || []).map((v, vi) =>
+            vi !== vIdx ? v : { ...v, price: newPrice }
+          ),
+        }
+      );
+      return { ...row, variations: vars };
+    }));
+  }, []);
+
   const handleSave = async () => {
     // CR-023 OD-023-2: flush in-progress text edits before save
     document.activeElement?.blur();
@@ -490,13 +686,21 @@ const BulkEditor = ({ foods = [], categories = [], menuType = "Normal", isLoadin
       try {
         const payload = buildPayload(row);
         if (row._isNew) {
-          await menuService.addFood(payload);
+          if (menuType === 'Aggregator') {
+            await menuService.addFoodAggregatorMultipart(payload, null, null); // BUG-327: flat multipart
+          } else {
+            await menuService.addFood(payload);
+          }
         } else {
-          await menuService.editFood(row._id, payload);
+          if (menuType === 'Aggregator') {
+            await menuService.editFoodAggregator(row._id, payload, null, null); // BUG-327: flat multipart
+          } else {
+            await menuService.editFood(row._id, payload);
+          }
           // Also update status if it changed
           const origActive = row._original.isActive ? 1 : 0;
           if (origActive !== row.status) {
-            await menuService.toggleFoodStatus(row._id, row.status);
+            await menuService.toggleFoodStatus(row._id, row.status, menuType); // BUG-301
           }
         }
         saved++;
@@ -505,7 +709,7 @@ const BulkEditor = ({ foods = [], categories = [], menuType = "Normal", isLoadin
         failed++;
         console.error(`[BulkEditor] Failed to save ${row.productName}:`, err);
         // CR-027 Phase 3: store the backend message on the row (tooltip + drawer)
-        setRows(prev => prev.map(r => r._id === row._id ? { ...r, _saveStatus: "error", _saveError: err.readableMessage } : r));
+        setRows(prev => prev.map(r => r._id === row._id ? { ...r, _saveStatus: "error", _saveError: `${row.productName || 'Item'}: ${err.readableMessage}` } : r)); // BUG-147: prefix item name
       }
     };
 
@@ -517,8 +721,14 @@ const BulkEditor = ({ foods = [], categories = [], menuType = "Normal", isLoadin
 
     setSaving(false);
     // CR-027 Phase 3 (OD-025-3 hybrid): ≤3 failures → hover hint; >3 → [View errors] drawer
+    // BUG-135-C: ≤3 failures → inline in toast; >3 → drawer button
     if (failed > 0 && failed <= 3) {
-      toast({ title: "Partial Save", description: `${saved} saved, ${failed} failed. Hover red rows to see why.` });
+      const failedRows = rows.filter(r => r._saveStatus === "error");
+      const errorLines = failedRows.map(r => `• ${r._saveError || "Save failed"}`).join("\n");
+      toast({
+        title: "Partial Save",
+        description: `${saved} saved, ${failed} failed.\n${errorLines}`,
+      });
     } else if (failed > 3) {
       toast({
         title: "Partial Save",
@@ -540,7 +750,7 @@ const BulkEditor = ({ foods = [], categories = [], menuType = "Normal", isLoadin
   };
 
   const toggleCol = (key) => {
-    const col = ALL_COLUMNS.find(c => c.key === key);
+    const col = getColumns(menuType).find(c => c.key === key);
     if (col?.alwaysVisible) return;
     setVisibleCols(prev => ({ ...prev, [key]: !prev[key] }));
   };
@@ -618,7 +828,7 @@ const BulkEditor = ({ foods = [], categories = [], menuType = "Normal", isLoadin
   };
 
   const toggleTier = (tier) => {
-    const tierCols = ALL_COLUMNS.filter(c => c.tier === tier);
+    const tierCols = getColumns(menuType).filter(c => c.tier === tier);
     const allOn = tierCols.every(c => visibleCols[c.key] || c.alwaysVisible);
     setVisibleCols(prev => {
       const next = { ...prev };
@@ -627,8 +837,8 @@ const BulkEditor = ({ foods = [], categories = [], menuType = "Normal", isLoadin
     });
   };
 
-  const activeColumns = ALL_COLUMNS.filter(c => visibleCols[c.key]);
-  const tier1Active = ALL_COLUMNS.filter(c => visibleCols[c.key] && c.tier === 1);
+  const activeColumns = getColumns(menuType).filter(c => visibleCols[c.key]);
+  const tier1Active = getColumns(menuType).filter(c => visibleCols[c.key] && c.tier === 1);
   const extraCount = activeColumns.length - tier1Active.length;
 
   // ─── Render ──────────────────────────────────────────────────────
@@ -680,7 +890,7 @@ const BulkEditor = ({ foods = [], categories = [], menuType = "Normal", isLoadin
             {showColPicker && (
               <div className="absolute right-0 top-full mt-1 w-64 bg-white rounded-xl shadow-xl border z-50 py-1 max-h-[420px] overflow-y-auto" style={{ borderColor: COLORS.borderGray }}>
                 {[1, 2, 3, 4].map(tier => {
-                  const tc = ALL_COLUMNS.filter(c => c.tier === tier);
+                  const tc = getColumns(menuType).filter(c => c.tier === tier);
                   const allOn = tc.every(c => visibleCols[c.key] || c.alwaysVisible);
                   const someOn = tc.some(c => visibleCols[c.key]);
                   return (
@@ -743,6 +953,26 @@ const BulkEditor = ({ foods = [], categories = [], menuType = "Normal", isLoadin
             style={{ backgroundColor: COLORS.primaryGreen }} data-testid="add-row-btn">
             <Plus className="w-3.5 h-3.5" /> Add Item
           </button>
+          {/* CR-158: pre-flight Validate Tax button */}
+          <button onClick={handleValidate}
+            className="flex items-center gap-1.5 px-3 py-1.5 text-sm rounded-lg border hover:opacity-80 transition-colors"
+            style={{
+              borderColor: validateIssueCount === null
+                ? COLORS.borderGray
+                : validateIssueCount === 0 ? '#16a34a' : '#dc2626',
+              color: validateIssueCount === null
+                ? COLORS.grayText
+                : validateIssueCount === 0 ? '#16a34a' : '#dc2626',
+              backgroundColor: 'transparent',
+            }}
+            data-testid="validate-tax-btn">
+            <ShieldCheck className="w-3.5 h-3.5" />
+            {validateIssueCount === null
+              ? 'Validate Tax'
+              : validateIssueCount === 0
+                ? 'Validate Tax (✓ clean)'
+                : `Validate Tax (${validateIssueCount} issue${validateIssueCount > 1 ? 's' : ''})`}
+          </button>
           <button onClick={handleSave} disabled={dirtyCount === 0 || saving}
             className="flex items-center gap-1.5 px-4 py-1.5 text-sm rounded-lg text-white hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed"
             style={{ backgroundColor: dirtyCount > 0 ? COLORS.primaryOrange : COLORS.grayText }} data-testid="save-changes-btn">
@@ -754,6 +984,61 @@ const BulkEditor = ({ foods = [], categories = [], menuType = "Normal", isLoadin
           </button>
         </div>
       </div>
+
+      {/* CR-374: Always-visible filter strip (OD-374-01: always visible, OD-374-02: category dropdown) */}
+      {(() => {
+        const hasFilters = filterStatus !== 'all' || filterType !== 'all' || filterCategoryId !== null;
+        const pill = (label, active, onClick, testId) => (
+          <button onClick={onClick}
+            className={`px-2.5 py-1 text-xs rounded-full border transition-colors ${active ? 'text-white border-transparent' : 'border-gray-200 hover:bg-orange-50'}`}
+            style={active ? { background: COLORS.primaryOrange } : { color: COLORS.grayText }}
+            data-testid={testId}>
+            {label}
+          </button>
+        );
+        return (
+          <div className="flex items-center gap-4 px-5 py-2 border-b flex-shrink-0 flex-wrap"
+            style={{ background: COLORS.sectionBg, borderColor: COLORS.borderGray }}
+            data-testid="bulk-filter-strip">
+            <div className="flex items-center gap-1.5">
+              <span className="text-xs font-medium" style={{ color: COLORS.grayText }}>Status:</span>
+              {pill('All',      filterStatus === 'all',      () => setFilterStatus('all'),      'filter-status-all')}
+              {pill('Active',   filterStatus === 'active',   () => setFilterStatus('active'),   'filter-status-active')}
+              {pill('Inactive', filterStatus === 'inactive', () => setFilterStatus('inactive'), 'filter-status-inactive')}
+            </div>
+            <div className="flex items-center gap-1.5">
+              <span className="text-xs font-medium" style={{ color: COLORS.grayText }}>Type:</span>
+              {pill('All',     filterType === 'all',    () => setFilterType('all'),    'filter-type-all')}
+              {pill('Veg',     filterType === 'veg',    () => setFilterType('veg'),    'filter-type-veg')}
+              {pill('Non-Veg', filterType === 'nonveg', () => setFilterType('nonveg'), 'filter-type-nonveg')}
+              {pill('Egg',     filterType === 'egg',    () => setFilterType('egg'),    'filter-type-egg')}
+              {pill('Jain',    filterType === 'jain',   () => setFilterType('jain'),   'filter-type-jain')}
+            </div>
+            <div className="flex items-center gap-1.5">
+              <span className="text-xs font-medium" style={{ color: COLORS.grayText }}>Category:</span>
+              <select value={filterCategoryId ?? ''}
+                onChange={e => setFilterCategoryId(e.target.value === '' ? null : Number(e.target.value))}
+                className="text-xs rounded-lg border px-2 py-1 bg-white outline-none focus:ring-1 focus:ring-orange-200"
+                style={{ borderColor: COLORS.borderGray, color: COLORS.darkText }}
+                data-testid="filter-category-select">
+                <option value="">All Categories</option>
+                {categories.map(c => (
+                  <option key={c.categoryId} value={c.categoryId}>{c.categoryName}</option>
+                ))}
+              </select>
+            </div>
+            {hasFilters && (
+              <button
+                onClick={() => { setFilterStatus('all'); setFilterType('all'); setFilterCategoryId(null); }}
+                className="text-xs underline ml-auto"
+                style={{ color: COLORS.primaryOrange }}
+                data-testid="filter-clear-btn">
+                Clear Filters
+              </button>
+            )}
+          </div>
+        );
+      })()}
 
       {/* Column chips */}
       <div className="flex items-center gap-1.5 px-5 py-2 border-b overflow-x-auto flex-shrink-0"
@@ -772,6 +1057,21 @@ const BulkEditor = ({ foods = [], categories = [], menuType = "Normal", isLoadin
         <table className="w-full border-collapse" data-testid="bulk-editor-grid">
           <thead className="sticky top-0 z-10">
             <tr style={{ background: "#F9FAFB" }}>
+              {/* CR-159: checkbox Select All — non-Aggregator only */}
+              {showBulkDelete && (
+                <th className="px-2 py-2.5 border-b w-10 text-center sticky left-0 z-20 bg-[#F9FAFB]"
+                    style={{ borderColor: COLORS.borderGray, borderRight: `1px solid ${COLORS.borderGray}` }}>
+                  <input type="checkbox"
+                    data-testid="bulk-select-all-checkbox"
+                    checked={selectedIds.size > 0 && groupedRows.filter(e => e._type === 'row').every(r => selectedIds.has(r._id))}
+                    onChange={e => {
+                      const flat = groupedRows.filter(e => e._type === 'row');
+                      setSelectedIds(e.target.checked ? new Set(flat.map(r => r._id)) : new Set());
+                    }}
+                    style={{ accentColor: '#EF4444', cursor: 'pointer' }}
+                  />
+                </th>
+              )}
               <th className="px-3 py-2.5 text-left text-[11px] font-semibold uppercase tracking-wider border-b border-r w-10 sticky left-0 z-20 bg-[#F9FAFB]"
                   style={{ color: COLORS.grayText, borderColor: COLORS.borderGray }}>#</th>
               {activeColumns.map(col => (
@@ -808,6 +1108,7 @@ const BulkEditor = ({ foods = [], categories = [], menuType = "Normal", isLoadin
               const row = entry;
               const rowDirty = isRowDirty(row);
               return (
+                <React.Fragment key={row._id}>
                 <tr key={row._id}
                   className={`border-b transition-colors ${
                       row._validationErrors?.length > 0 ? "bg-red-50/40 border-l-4 border-l-red-500"
@@ -818,6 +1119,23 @@ const BulkEditor = ({ foods = [], categories = [], menuType = "Normal", isLoadin
                     :                                      "hover:bg-gray-50/50"
                   }`}
                   style={{ borderColor: COLORS.borderGray }} data-testid={`row-${row._id}`}>
+                  {/* CR-159: per-row checkbox — non-Aggregator only */}
+                  {showBulkDelete && (
+                    <td className="px-2 text-center border-r sticky left-0 bg-inherit"
+                        style={{ borderColor: COLORS.borderGray, width: 40 }}
+                        onClick={e => e.stopPropagation()}>
+                      <input type="checkbox"
+                        data-testid={`bulk-row-checkbox-${row._id}`}
+                        checked={selectedIds.has(row._id)}
+                        onChange={e => setSelectedIds(prev => {
+                          const next = new Set(prev);
+                          e.target.checked ? next.add(row._id) : next.delete(row._id);
+                          return next;
+                        })}
+                        style={{ accentColor: '#EF4444', cursor: 'pointer' }}
+                      />
+                    </td>
+                  )}
                   <td className="px-3 py-1.5 text-xs font-mono border-r sticky left-0 bg-inherit" style={{ color: COLORS.grayText, borderColor: COLORS.borderGray }}>
                     {row._saveStatus === "saving" && <Loader2 className="w-3 h-3 animate-spin text-amber-500" />}
                     {row._saveStatus === "saved" && <Check className="w-3 h-3 text-green-500" />}
@@ -835,7 +1153,7 @@ const BulkEditor = ({ foods = [], categories = [], menuType = "Normal", isLoadin
                       :                                                          ""
                     }`}
                         style={{ borderColor: COLORS.borderGray, minWidth: col.width }}>
-                      <CellRenderer col={col} row={row} updateCell={updateCell} catOptions={catOptions} dirty={isDirty(row, col.key)} />
+                      <CellRenderer col={col} row={row} updateCell={updateCell} catOptions={catOptions} clientOptions={clientOptions} dirty={isDirty(row, col.key)} toggleExpand={toggleExpand} />
                     </td>
                   ))}
                   <td className="px-1.5 py-1 text-center">
@@ -851,6 +1169,37 @@ const BulkEditor = ({ foods = [], categories = [], menuType = "Normal", isLoadin
                     )}
                   </td>
                 </tr>
+                {/* CR-145: expand sub-row */}
+                {expandedRowId === row._id && (
+                  <tr key={`${row._id}-expand`}>
+                    <td colSpan={activeColumns.length + 2}
+                      style={{ padding:0,
+                               background: expandedRowType === 'addon' ? '#f0fdf4' : '#fdf4ff',
+                               borderBottom: `1px solid ${expandedRowType === 'addon' ? '#bbf7d0' : '#e9d5ff'}` }}>
+                      {expandedRowType === 'addon' && (
+                        <AddonExpandPanel
+                          foodName={row.productName}
+                          foodImage={row.productImage || null}
+                          allAddons={addons}
+                          currentAddonIds={row.addonIds || []}
+                          currencySymbol={currencySymbol}
+                          onApply={(newIds) => { updateCell(row._id, 'addonIds', newIds); closeExpand(); }}
+                          onClose={closeExpand}
+                        />
+                      )}
+                      {expandedRowType === 'variation' && (
+                        <VariationExpandPanel
+                          foodName={row.productName}
+                          foodImage={row.productImage || null}
+                          variations={row.variations || []}
+                          onClose={closeExpand}
+                          onPriceChange={(gIdx, vIdx, price) => handleVariationPriceChange(row._id, gIdx, vIdx, price)}
+                        />
+                      )}
+                    </td>
+                  </tr>
+                )}
+              </React.Fragment>
               );
             })}
             {groupedRows.length === 0 && (
@@ -882,6 +1231,75 @@ const BulkEditor = ({ foods = [], categories = [], menuType = "Normal", isLoadin
           </div>
         </div>
       )}
+
+      {/* CR-159: Selection banner — appears when rows selected (non-Aggregator only) */}
+      {showBulkDelete && selectedIds.size > 0 && (
+        <div className="flex items-center justify-between px-5 py-3 border-t bg-white flex-shrink-0"
+             style={{ borderColor: COLORS.borderGray, boxShadow: '0 -4px 6px -1px rgba(0,0,0,0.08)' }}
+             data-testid="bulk-delete-banner">
+          <span className="text-sm font-medium" style={{ color: '#374151' }}>
+            <span style={{ color: '#EF4444', fontWeight: 700 }}>{selectedIds.size}</span>
+            {' '}item{selectedIds.size !== 1 ? 's' : ''} selected
+          </span>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setSelectedIds(new Set())}
+              className="px-3 py-1.5 text-sm rounded-lg border hover:bg-gray-50 transition-colors"
+              style={{ borderColor: COLORS.borderGray, color: COLORS.grayText }}
+              data-testid="bulk-delete-clear-btn">
+              Clear
+            </button>
+            <button
+              onClick={() => setBulkDeleteOpen(true)}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-sm rounded-lg text-white hover:opacity-90"
+              style={{ backgroundColor: '#EF4444' }}
+              data-testid="bulk-delete-selected-btn">
+              Delete Selected ({selectedIds.size})
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* CR-159: Bulk delete confirm dialog */}
+      <Dialog open={bulkDeleteOpen} onOpenChange={v => { if (!v) { setBulkDeleteOpen(false); setBulkDeleteReason(''); } }}>
+        <DialogContent className="max-w-sm" data-testid="bulk-delete-confirm-dialog">
+          <DialogHeader>
+            <DialogTitle>Delete {selectedIds.size} Item{selectedIds.size !== 1 ? 's' : ''}</DialogTitle>
+          </DialogHeader>
+          <p className="text-sm text-slate-500 mt-1">
+            Permanently delete {selectedIds.size} item{selectedIds.size !== 1 ? 's' : ''}. This cannot be undone.
+          </p>
+          <div className="mt-3">
+            <label className="text-xs font-semibold text-slate-700 mb-1.5 block">Reason for deletion</label>
+            <select
+              value={bulkDeleteReason}
+              onChange={e => setBulkDeleteReason(e.target.value)}
+              className="w-full px-3 py-2 text-sm border rounded-lg outline-none focus:ring-1 focus:ring-red-200"
+              style={{ borderColor: COLORS.borderGray }}
+              data-testid="bulk-delete-reason-select">
+              <option value="">Select reason…</option>
+              {(deleteReasons || []).map(r => <option key={r} value={r}>{r}</option>)}
+            </select>
+          </div>
+          <div className="flex gap-2 mt-4">
+            <button
+              onClick={() => { setBulkDeleteOpen(false); setBulkDeleteReason(''); }}
+              className="flex-1 px-4 py-2 text-sm border rounded-lg hover:bg-gray-50 transition-colors"
+              style={{ borderColor: COLORS.borderGray, color: COLORS.grayText }}
+              data-testid="bulk-delete-cancel-btn">
+              Cancel
+            </button>
+            <button
+              onClick={handleBulkDeleteConfirm}
+              disabled={!bulkDeleteReason || bulkDeleting}
+              className="flex-1 px-4 py-2 text-sm rounded-lg text-white hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed"
+              style={{ backgroundColor: '#EF4444' }}
+              data-testid="bulk-delete-confirm-btn">
+              {bulkDeleting ? 'Deleting…' : 'Confirm Delete'}
+            </button>
+          </div>
+        </DialogContent>
+      </Dialog>
 
       {/* CR-036-FU-03 N1: confirmation dialog shown when Excel import succeeds
           AND user has dirty rows that would be wiped by the auto-refresh.
@@ -973,7 +1391,7 @@ function LocalTextInput({ value, onChange, ...props }) {
 }
 
 // ─── Cell Renderer ─────────────────────────────────────────────────
-const CellRenderer = React.memo(function CellRenderer({ col, row, updateCell, catOptions, dirty }) {
+const CellRenderer = React.memo(function CellRenderer({ col, row, updateCell, catOptions, clientOptions, dirty, toggleExpand }) { // CR-140 D2, CR-145
   const bc = dirty ? COLORS.amber : COLORS.borderGray;
   const base = "w-full px-2 py-1 text-sm rounded border outline-none focus:ring-1 focus:ring-orange-200 bg-transparent";
 
@@ -982,7 +1400,7 @@ const CellRenderer = React.memo(function CellRenderer({ col, row, updateCell, ca
       className={base} style={{ color: COLORS.darkText, borderColor: bc }} placeholder={col.label + "..."} data-testid={`cell-${col.key}-${row._id}`} />;
   }
   if (col.type === "number") {
-    return <input type="number" value={row[col.key] ?? 0} onChange={e => updateCell(row._id, col.key, Number(e.target.value))}
+    return <input type="number" value={row[col.key] ?? 0} onWheel={e => e.target.blur()} onFocus={e => { if (e.target.value === '0' || e.target.value === 0) e.target.value = ''; }} onChange={e => { const n = parseFloat(e.target.value); if (!isNaN(n) && n >= 0) updateCell(row._id, col.key, n); }} // BUG-392 // BUG-394
       className={`${base} text-right font-mono`} style={{ color: COLORS.darkText, borderColor: bc }} min={0}
       step={col.key.includes("tax") || col.key.includes("Price") || col.key.includes("Charge") || col.key.includes("charge") ? 0.01 : 1}
       data-testid={`cell-${col.key}-${row._id}`} />;
@@ -1039,13 +1457,7 @@ const CellRenderer = React.memo(function CellRenderer({ col, row, updateCell, ca
         {DISCOUNT_TYPE_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
       </select>;
     }
-    if (col.key === "taxCalc") {
-      return <select value={row.taxCalc || "Exclusive"} onChange={e => updateCell(row._id, "taxCalc", e.target.value)}
-        className={base} style={{ color: COLORS.darkText, borderColor: bc }} data-testid={`cell-taxCalc-${row._id}`}>
-        <option value="Inclusive">Inclusive</option>
-        <option value="Exclusive">Exclusive</option>
-      </select>;
-    }
+    // BUG-359: taxCalc renderer removed — column no longer in ALL_COLUMNS
     // CR-010: Item Unit dropdown for weight-based billing
     if (col.key === "itemUnit") {
       return <select value={row.itemUnit || ""} onChange={e => updateCell(row._id, "itemUnit", e.target.value)}
@@ -1053,6 +1465,57 @@ const CellRenderer = React.memo(function CellRenderer({ col, row, updateCell, ca
         {ITEM_UNIT_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
       </select>;
     }
+    // CR-140 GAP-6 D3: Brand dropdown for aggregator items
+    if (col.key === "clientId") {
+      return <select value={row.clientId ?? 0} onChange={e => updateCell(row._id, "clientId", Number(e.target.value))}
+        className={base} style={{ color: COLORS.darkText, borderColor: bc }} data-testid={`cell-clientId-${row._id}`}>
+        {(clientOptions || []).map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+      </select>;
+    }
+  }
+  // CR-145 / GAP-BULK-DEFAULTS fix: image, addon_expand, var_expand moved to top-level
+  // These were incorrectly nested inside if (col.type === "dropdown") — making them unreachable.
+  // Fix: close the dropdown block after clientId, place these at CellRenderer top-level.
+  if (col.type === 'image') {
+    return row.productImage ? (
+      <img src={row.productImage} alt="" loading="lazy"
+        style={{ width:36, height:36, borderRadius:6, objectFit:'cover',
+                 border:'1px solid #e2e8f0', display:'block' }} />
+    ) : (
+      <div style={{ width:36, height:36, borderRadius:6, background:'#f1f5f9',
+                    border:'1px solid #e2e8f0' }} />
+    );
+  }
+  // CR-145: addon chip
+  if (col.type === 'addon_expand') {
+    const count = (row.addonIds || []).length;
+    return (
+      <span data-testid={`addon-chip-${row._id}`}
+        onClick={() => toggleExpand(row._id, 'addon')}
+        style={{ display:'inline-flex', alignItems:'center', cursor:'pointer', gap:4,
+                 background: dirty ? '#fef9c3' : count > 0 ? '#eff6ff' : '#f8fafc',
+                 color: dirty ? '#a16207' : count > 0 ? '#3b82f6' : '#94a3b8',
+                 border:`1px solid ${dirty ? '#fde047' : count > 0 ? '#bfdbfe' : '#e2e8f0'}`,
+                 borderRadius:12, padding:'3px 10px', fontSize:11.5, whiteSpace:'nowrap' }}>
+        {count > 0 ? `${count} add-on${count!==1?'s':''}` + ' ▾' : 'None'}
+      </span>
+    );
+  }
+  // CR-145: variation chip
+  if (col.type === 'var_expand') {
+    const count = (row.variations || []).length;
+    return (
+      <span data-testid={`var-chip-${row._id}`}
+        onClick={() => count > 0 && toggleExpand(row._id, 'variation')}
+        style={{ display:'inline-flex', alignItems:'center', gap:4,
+                 cursor: count > 0 ? 'pointer' : 'default',
+                 background: count > 0 ? '#fdf4ff' : '#f8fafc',
+                 color: count > 0 ? '#9333ea' : '#94a3b8',
+                 border:`1px solid ${count > 0 ? '#e9d5ff' : '#e2e8f0'}`,
+                 borderRadius:12, padding:'3px 10px', fontSize:11.5, whiteSpace:'nowrap' }}>
+        {count > 0 ? `${count} group${count!==1?'s':''}` + ' ▾' : 'None'}
+      </span>
+    );
   }
   return <span className="text-xs" style={{ color: COLORS.grayText }}>—</span>;
 });

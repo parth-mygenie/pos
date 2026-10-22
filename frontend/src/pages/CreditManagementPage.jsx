@@ -4,11 +4,14 @@ import CreditManagementPanel from "../components/panels/CreditManagementPanel";
 
 // CR-041: Credit Management as full-page route (was panel overlay on Dashboard)
 const CreditManagementPage = () => {
-  const [isSidebarExpanded, setIsSidebarExpanded] = useState(false);
+  // BUG-361: persist sidebar state across reloads
+  const [isSidebarExpanded, setIsSidebarExpanded] = useState(
+    () => localStorage.getItem('mygenie_sidebar_expanded') === 'true'
+  );
 
   return (
     <div className="flex h-screen" data-testid="credit-management-page">
-      <Sidebar isExpanded={isSidebarExpanded} setIsExpanded={setIsSidebarExpanded} />
+      <Sidebar isExpanded={isSidebarExpanded} setIsExpanded={(v) => { setIsSidebarExpanded(v); localStorage.setItem('mygenie_sidebar_expanded', String(v)); }} />
       <CreditManagementPanel
         isOpen={true}
         onClose={() => window.history.back()}

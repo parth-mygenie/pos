@@ -36,6 +36,7 @@ export const fromAPI = {
     productName: api.name,
     description: api.description || '',
     productImage: api.image?.includes('food-default-image') ? null : api.image || null,
+    swiggyImage: api.swiggy_image || null, // BUG-327: Swiggy image URL; null when not uploaded
 
     // Category — foods-list returns nested object, not flat ID
     categoryId: api.category?.id || null,
@@ -81,6 +82,13 @@ export const fromAPI = {
     // Menu type
     foodFor: api.food_for || 'Normal',
 
+    // CR-140 GAP-4: Aggregator platform fields
+    swiggy:    api.swiggy === 'YES',
+    zomato:    api.zomato === 'YES',
+    clientId:  api.client_id ?? 0,
+    foodStock: api.food_stock ?? 1,   // 1 = live on UrbanPiper, 0 = disabled
+    turnOnAt:  api.turn_on_at || null,
+
     // Sort order (for drag-and-drop)
     sortOrder: api.food_order || 0,
 
@@ -106,7 +114,8 @@ export const fromAPI = {
 
     // BUG-120-D: Fields now available in API (2026-06-09)
     isInventory: toBoolean(api.is_inventory),
-    packedFood: toBoolean(api.packed_food),
+    packedFood: toBoolean(api.is_packaged_good ?? api.packed_food), // BUG-326: is_packaged_good replaces packed_food for aggregator
+    swiggyPackingChrg: api.swiggy_packing_chrg === 'YES', // BUG-326: new aggregator-only field
     isOutOfStock: toBoolean(api.stock_out),
     isDisabled: toBoolean(api.is_disable),
     taxCalc: api.tax_calc || 'Exclusive',
@@ -188,13 +197,15 @@ export const fromAPI = {
 
   /**
    * Transform station printer list response (API #16)
+   * BUG-288: API returns { printers: [{id, area_name}] } — confirmed via curl 2026-07-31
    */
   stationPrinterList: (data) => {
-    const list = data.stations || data.data || data || [];
+    if (!data) return [];
+    const list = data.printers || data.stations || data.data || data || [];
     if (!Array.isArray(list)) return [];
     return list.map((s) => ({
       id: s.id,
-      name: s.station_name || s.name,
+      name: s.area_name || s.station_name || s.name,
       printerId: s.printer_id || s.restaurant_printer_id || '',
     }));
   },
@@ -202,13 +213,20 @@ export const fromAPI = {
   /**
    * Transform addon list response (API #17)
    */
-  addonList: (data) => {
+  addonList: (data) => {  // CR-142/CR-144
     const addons = data.addons || data.data || data || [];
     if (!Array.isArray(addons)) return [];
     return addons.map((a) => ({
-      id: a.id,
-      name: a.name,
-      price: parseFloat(a.price) || 0,
+      id:              a.id,
+      name:            a.name,
+      price:           parseFloat(a.price) || 0,
+      status:          a.status ?? 1,
+      weight:          a.weight || 0,
+      veg:             a.veg ?? null,
+      hasInventory:    a.has_inventory === 'Yes',
+      recipeId:        a.recipe_id || null,
+      hasRecipe:       a.has_recipe === true,
+      isPushedManaged: a.is_pushed_managed === true,
     }));
   },
 };
@@ -228,6 +246,14 @@ export const toAPI = {
     discount: Number(form.discount) || 0,
     discount_type: form.discountType || 'amount',
     food_for: form.foodFor || 'Normal',
+    // CR-140 GAP-2: Aggregator platform fields — only sent for Aggregator menu type
+    ...(form.foodFor === 'Aggregator' ? {
+      swiggy: form.swiggy !== false ? 'YES' : 'NO',
+      zomato: form.zomato !== false ? 'YES' : 'NO',
+      client: form.clientId ?? 0,
+      is_packaged_good:    form.packedFood        ? 1     : 0,    // BUG-326
+      swiggy_packing_chrg: form.swiggyPackingChrg ? 'YES' : 'NO', // BUG-326
+    } : {}), // CR-140
     dinein: form.dineIn ? 'Yes' : 'No',
     delivery: form.delivery ? 'Yes' : 'No',
     takeaway: form.takeaway ? 'Yes' : 'No',
@@ -239,8 +265,8 @@ export const toAPI = {
     pack_charges: String(parseFloat(form.packCharges) || '0.00'),
     takeaway_charge: String(parseFloat(form.takeawayCharge) || '0.00'),
     delivery_charge: String(parseFloat(form.deliveryCharge) || '0.00'),
-    tax_type: form.taxType || 'GST',
-    tax: String(Number(form.taxPercentage) || 0),
+    tax_type: form.foodFor === 'Aggregator' ? 'GST' : (form.taxType || 'GST'),           // BUG-391: Aggregator safety net — always GST
+    tax:      form.foodFor === 'Aggregator' ? '5'   : String(Number(form.taxPercentage) || 0), // BUG-391: Aggregator safety net — always 5%
     complementary: form.isComplementary ? 'Yes' : 'No',
     give_discount: form.giveDiscount ? 'Yes' : 'No',
     item_code: form.itemCode || '',

@@ -200,7 +200,10 @@ const OrderLedgerMockup = () => {
   const schedules = useMemo(() => restaurant?.schedules || [], [restaurant?.schedules]);
 
   // App shell
-  const [isSidebarExpanded, setIsSidebarExpanded] = useState(false);
+  // BUG-361: persist sidebar state across reloads
+  const [isSidebarExpanded, setIsSidebarExpanded] = useState(
+    () => localStorage.getItem('mygenie_sidebar_expanded') === 'true'
+  );
   const [isSilentMode, setIsSilentMode] = useState(false);
 
   // ── Date range — default last 7 days (owner-locked 2026-06-03) ───────────
@@ -351,7 +354,22 @@ const OrderLedgerMockup = () => {
   const filteredOrders = useMemo(() => {
     if (activeTab === 'audit' || activeTab === 'ledgerAudit') return [];
     let r = apiOrders.filter(TAB_FILTERS[activeTab] || (() => true));
-    if (filters.paymentMethod) r = r.filter((o) => o.paymentType?.toLowerCase() === filters.paymentMethod.toLowerCase());
+    // BUG-272: Fix payment filter — match paymentMethod OR partial legs
+    if (filters.paymentMethod) {
+      const fm = filters.paymentMethod.toLowerCase();
+      r = r.filter((o) => {
+        const pm = (o.paymentMethod || '').toLowerCase();
+        if (fm === 'partial') return pm === 'partial';
+        if (pm === fm) return true;
+        // Include partial orders that have a matching leg
+        if (pm === 'partial') {
+          if (fm === 'cash' && o.cashAmount > 0) return true;
+          if (fm === 'card' && o.cardAmount > 0) return true;
+          if (fm === 'upi' && o.upiAmount > 0) return true;
+        }
+        return false;
+      });
+    }
     if (filters.paymentType) r = r.filter((o) => filters.paymentType === 'prepaid' ? o.paymentType?.toLowerCase() !== 'cash' : o.paymentType?.toLowerCase() === 'cash');
     if (filters.channel) r = r.filter((o) => o.orderType?.toLowerCase() === filters.channel);
     if (filters.paymentGateway === 'gateway') r = r.filter((o) => Boolean(o.razorpayOrderId));
@@ -391,7 +409,24 @@ const OrderLedgerMockup = () => {
 
   const handleTabChange = (id) => { setActiveTab(id); setSelectedOrder(null); setFilters({ status: null, paymentMethod: null, paymentType: null, channel: null, platform: null, paymentGateway: null }); };
   const SortIcon = ({ col }) => sortCol !== col ? <ChevronsUpDown className="w-3 h-3 text-zinc-300" /> : sortDir === 'asc' ? <ChevronUp className="w-3 h-3 text-[#F26B33]" /> : <ChevronDown className="w-3 h-3 text-[#F26B33]" />;
-  const cellVal = (o, c) => { const v = o[c.key]; if (v === undefined || v === null || v === '' || v === 0) return '—'; if (c.align === 'right' && typeof v === 'number') return fmtCur(v); return String(v); };
+  // BUG-272: Payment badge colors
+  const PAY_BADGE = { cash: 'bg-emerald-50 text-emerald-700 border-emerald-200', card: 'bg-blue-50 text-blue-700 border-blue-200', upi: 'bg-violet-50 text-violet-700 border-violet-200' };
+  const paymentBadges = (o) => {
+    const pm = (o.paymentMethod || '').toLowerCase();
+    if (pm === 'partial') {
+      const legs = [];
+      if (o.cashAmount > 0) legs.push({ mode: 'Cash', amt: o.cashAmount, cls: PAY_BADGE.cash });
+      if (o.cardAmount > 0) legs.push({ mode: 'Card', amt: o.cardAmount, cls: PAY_BADGE.card });
+      if (o.upiAmount > 0) legs.push({ mode: 'UPI', amt: o.upiAmount, cls: PAY_BADGE.upi });
+      if (legs.length) return legs.map((l, i) => <span key={i} className={`inline-block text-[10px] font-medium px-1.5 py-0.5 rounded border mr-1 ${l.cls}`}>{l.mode} {fmtCur(l.amt)}</span>);
+      return <span className="text-[10px] font-medium px-1.5 py-0.5 rounded border bg-zinc-50 text-zinc-600 border-zinc-200">Partial</span>;
+    }
+    const cls = PAY_BADGE[pm] || 'bg-zinc-50 text-zinc-600 border-zinc-200';
+    const label = pm ? pm.charAt(0).toUpperCase() + pm.slice(1) : (o.paymentType || '—');
+    return <span className={`inline-block text-[10px] font-medium px-1.5 py-0.5 rounded border ${cls}`}>{label}</span>;
+  };
+
+  const cellVal = (o, c) => { if (c.key === 'paymentType') return paymentBadges(o); const v = o[c.key]; if (v === undefined || v === null || v === '' || v === 0) return '—'; if (c.align === 'right' && typeof v === 'number') return fmtCur(v); return String(v); };
 
   // Visible columns (ordered by COLUMNS array)
   const visibleColList = useMemo(() => COLUMNS.filter((c) => visibleCols.has(c.key)), [visibleCols]);
@@ -570,12 +605,12 @@ const OrderLedgerMockup = () => {
   // ══════════════════════════════════════════════════════════════════════════════
   return (
     <div className="flex h-screen bg-white font-sans" data-testid="order-ledger-screen">
-      <Sidebar isExpanded={isSidebarExpanded} setIsExpanded={setIsSidebarExpanded} isSilentMode={isSilentMode} setIsSilentMode={setIsSilentMode} onOpenSettings={() => {}} onOpenMenu={() => {}} onOpenCredit={() => {}} onRefresh={refetch} isRefreshing={isLoading} isOrderEntryOpen={false} />
+      <Sidebar isExpanded={isSidebarExpanded} setIsExpanded={(v) => { setIsSidebarExpanded(v); localStorage.setItem('mygenie_sidebar_expanded', String(v)); }} isSilentMode={isSilentMode} setIsSilentMode={setIsSilentMode} onOpenSettings={() => {}} onOpenMenu={() => {}} onOpenCredit={() => {}} onRefresh={refetch} isRefreshing={isLoading} isOrderEntryOpen={false} />
 
       <div className="flex-1 flex overflow-hidden">
         <main className="flex-1 flex flex-col overflow-hidden bg-zinc-50">
           {/* ── Header (S5 pattern — verbatim) ───────────────────────────── */}
-          <header className="flex items-center justify-between px-8 py-5 bg-white border-b border-zinc-200 shrink-0" data-testid="order-ledger-header">
+          <header className="flex items-center justify-between px-8 py-5 bg-white border-b border-zinc-200 shrink-0 flex-wrap gap-y-3" data-testid="order-ledger-header"> {/* BUG-555 */}
             <div className="flex items-center gap-4">
               <button className="p-2 hover:bg-zinc-100 rounded-lg transition-colors" data-testid="order-ledger-back-btn" onClick={() => navigate('/reports-module/dashboard')}>
                 <ArrowLeft className="w-5 h-5 text-zinc-600" />
@@ -585,7 +620,7 @@ const OrderLedgerMockup = () => {
               </h1>
             </div>
 
-            <div className="flex items-center gap-3">
+            <div className="flex items-center gap-3 flex-wrap">
               {/* From-To range (S5) */}
               <div className={`flex items-center gap-2 px-3 py-2 border ${draftDirty && draftValid && !draftRangeExceeded ? 'border-[#F26B33]' : draftRangeExceeded ? 'border-red-400' : 'border-zinc-200'} bg-white rounded-lg ${isLoading ? 'opacity-50' : ''}`} data-testid="order-ledger-daterange">
                 <CalendarIcon className="w-4 h-4 text-zinc-500" />
@@ -965,7 +1000,7 @@ const OrderLedgerMockup = () => {
                                         <tr key={`${f.orderNumber}-${f.ruleId}-${i}`} onClick={() => setSelectedOrder(row)} className={`border-b cursor-pointer transition-colors ${f.severity === 'AMBER' ? 'border-amber-100 bg-amber-50/40 hover:bg-amber-100/60' : 'border-red-100 bg-red-50/40 hover:bg-red-100/60'}`} data-testid={`order-ledger-ledgeraudit-flag-${f.orderNumber}-${f.ruleId}`}>
                                           <td className={`px-3 py-2 font-mono font-medium whitespace-nowrap ${f.severity === 'AMBER' ? 'text-amber-900' : 'text-red-900'}`}>#{f.orderNumber} <span className={`ml-1 text-[8px] px-1 py-0.5 rounded font-bold ${f.severity === 'AMBER' ? 'bg-amber-200 text-amber-800' : 'bg-red-200 text-red-800'}`}>{f.severity}</span>{(f.tags || []).map((t) => <span key={t} className={`ml-1 text-[8px] px-1 py-0.5 rounded font-bold border ${TAG_BADGE_STYLES[t] || 'bg-zinc-100 text-zinc-600 border-zinc-300'}`}>{TAG_LABELS[t] || t}</span>)}{S5_OVER_TAXED.has(String(f.orderNumber)) && <span className="ml-1 text-[8px] px-1 py-0.5 rounded font-bold border bg-red-100 text-red-700 border-red-300">Over Taxed</span>}{S5_TAX_NOT_COMPUTED.has(String(f.orderNumber)) && <span className="ml-1 text-[8px] px-1 py-0.5 rounded font-bold border bg-amber-100 text-amber-700 border-amber-300">Tax Not Computed</span>}{S6_CRITICAL.has(String(f.orderNumber)) && <span className="ml-1 text-[8px] px-1.5 py-0.5 rounded font-bold border bg-red-600 text-white border-red-700">Critical</span>}</td>
                                           <td className="px-3 py-2 text-zinc-700 whitespace-nowrap">{row.orderDate || '—'}</td>
-                                          <td className="px-3 py-2 text-zinc-700 whitespace-nowrap">{row.paymentType || row.paymentMethod || '—'}</td>
+                                          <td className="px-3 py-2 text-zinc-700 whitespace-nowrap">{paymentBadges(row)}</td>
                                           <td className="px-3 py-2 text-zinc-700 whitespace-nowrap">{row.orderType || src.channel || src.orderType || '—'}</td>
                                           <td className="px-3 py-2 text-right text-zinc-700 tabular-nums">{itemCount || '—'}</td>
                                           <td className="px-3 py-2 text-zinc-600 max-w-[200px] truncate" title={itemsOrdered}>{itemsOrdered}</td>

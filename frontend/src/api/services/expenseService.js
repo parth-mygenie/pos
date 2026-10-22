@@ -42,7 +42,7 @@ export const createEmptyCategory = (categoryName) =>
 export const createCategoryWithItems = (categoryName, itemNames = []) =>
   api.post(EXPENSE_ENDPOINTS.STORE_EXPENSE, {
     category_name: categoryName,
-    stock_title: itemNames,
+    stock_title: itemNames, // BUG-158 + BUG-161: stock_title for create (single + bulk)
   });
 
 /**
@@ -75,47 +75,84 @@ export const deleteExpenseCategory = (id) =>
   api.delete(`${EXPENSE_ENDPOINTS.CATEGORY}/${id}`); // BUG-160 fix
 
 /**
- * DELETE a single expense stock item by ID
+ * GET impact data before deleting an expense stock item
+ * BUG-201: returns { transaction_count, total_amount, date_range }
  * @param {number|string} itemId
  * @returns {Promise<AxiosResponse>}
  */
-export const deleteExpenseItem = (itemId) =>
-  api.delete(`${EXPENSE_ENDPOINTS.DELETE_ITEM}/${itemId}`);
+export const getItemImpact = (itemId) =>
+  api.get(`${EXPENSE_ENDPOINTS.ITEM_IMPACT}/${itemId}/impact`);
 
 /**
- * POST export stock master to Excel
+ * DELETE a single expense stock item by ID
+ * BUG-201: now accepts optional delete_reason (sent as request body)
+ * @param {number|string} itemId
+ * @param {string} [reason]
  * @returns {Promise<AxiosResponse>}
  */
-export const exportStockMaster = () =>
-  api.post(EXPENSE_ENDPOINTS.BULK_EXPORT, { type: 'all' }); // BUG-163 fix
-
-/**
- * POST import stock master from Excel file
- * @param {File} file
- * @returns {Promise<AxiosResponse>}
- */
-export const importStockMaster = (file) => {
-  const formData = new FormData();
-  formData.append('file', file);
-  return api.post(EXPENSE_ENDPOINTS.BULK_IMPORT, formData, {
-    headers: { 'Content-Type': 'multipart/form-data' },
+export const deleteExpenseItem = (itemId, reason) =>
+  api.delete(`${EXPENSE_ENDPOINTS.DELETE_ITEM}/${itemId}`, {
+    data: reason ? { delete_reason: reason } : undefined,
   });
+
+/**
+ * PUT update a stock item's title and/or category atomically
+ * BUG-202-fwd-compat (backend delivered 2026-07-17):
+ *   Route:   PUT /api/v2/vendoremployee/expense/expenses/{item_id}
+ *   Body:    { stock_title, category_id }
+ *   Success: 200 → { message, updated_expense: {id, stock_title, category_id, category_name} }
+ *   404:     HTTP 201 (sic) with { errors: [{code: 'not_found', message}] } — parse body, not status
+ *   Duplicate name: NOT enforced by backend (returns 200) — FE must pre-flight check
+ *   Unit price row survives (no cascade on update).
+ * @param {number|string} itemId
+ * @param {{stock_title: string, category_id: number|string}} payload
+ * @returns {Promise<AxiosResponse>}
+ */
+// BUG-203: Backend now accepts unit_price on PUT (was ignored before fix).
+export const updateExpenseItem = (itemId, { stock_title, category_id, unit_price }) => {
+  const body = { stock_title, category_id };
+  if (unit_price != null) body.unit_price = unit_price; // BUG-203: include when provided
+  return api.put(`${EXPENSE_ENDPOINTS.STOCK_ITEM_UPDATE}/${itemId}`, body);
 };
+
+// CR-062: Server-side expense aggregation (replaces client-side math from CR-061)
+/**
+ * @param {string} from - DD/MM/YYYY
+ * @param {string} to   - DD/MM/YYYY
+ * @param {Object} [filters]
+ * @param {number[]} [filters.category_ids]
+ * @param {string[]} [filters.payment_methods]
+ * @returns {Promise<{grand_total: number, daily_totals: Array, category_totals: Array, payment_totals: Array}>}
+ */
+export const getExpenseAggregation = async (from, to, filters = {}) => {
+  const body = { from, to };
+  if (filters.category_ids?.length) body.category_ids = filters.category_ids;
+  if (filters.payment_methods?.length) body.payment_methods = filters.payment_methods;
+  const res = await api.post(EXPENSE_ENDPOINTS.EXPENSE_AGGREGATION, body);
+  return res.data;
+};
+
+// CR-074-A (2026-07-16): removed exportStockMaster + importStockMaster (item-master Excel/CSV import/export UI removed from Bulk Editor)
 
 // =============================================================================
 // TRANSACTIONS — EXPENSE REPORT / ENTRY
 // =============================================================================
 
 /**
- * GET expense report (transactions) for a date range
- * @param {string} from  - "DD/MM/YYYY"
- * @param {string} to    - "DD/MM/YYYY"
- * @param {string} [paymentMethod]  - optional filter
- * @returns {Promise<AxiosResponse>}
+ * CR-061 V3: GET expense report — fetch paginated expense transactions
+ * @param {string} from           - "DD/MM/YYYY"
+ * @param {string} to             - "DD/MM/YYYY"
+ * @param {Object} [opts]
+ * @param {string} [opts.paymentMethod]  - payment filter (server-side)
+ * @param {number} [opts.categoryId]     - category filter (server-side, G8)
+ * @param {number} [opts.page=1]         - page number (G6)
+ * @param {string} [opts.search]         - IGNORED: backend /expenses-report does not implement ?search= (CR-061 G7). Filter client-side instead.
  */
-export const getExpenseReport = (from, to, paymentMethod = '') => {
-  const params = { from, to };
+// CR-061 G7 fix: removed params.search — backend silently ignores it on /expenses-report
+export const getExpenseReport = (from, to, { paymentMethod = '', categoryId = null, page = 1 } = {}) => {
+  const params = { from, to, page };
   if (paymentMethod) params.payment_method = paymentMethod;
+  if (categoryId)    params.category_id    = categoryId;
   return api.get(EXPENSE_ENDPOINTS.EXPENSES_REPORT, { params });
 };
 
@@ -136,7 +173,9 @@ export const addExpenseEntry = (date, totalAmount, lines = []) =>
       payment_method: l.payment_method,
       quantity: l.quantity || 0,
       unit: l.unit || '',
-      physical_quantity: 0, // deprecated — always 0
+      physical_quantity: l.physical_quantity || 0, // BUG-176: user-enterable, not deprecated
+      notes: l.notes || '',                        // BUG-199: propagate caller-provided notes (was dropped here)
+      category_id: l.category_id ?? null,          // BUG-199: preserve line's category (curl-verified 2026-07-16; missing → backend defaults to misc/273)
     })),
   });
 
@@ -154,7 +193,9 @@ export const editExpenseEntry = (id, data) =>
     payment_method: data.payment_method,
     quantity: data.quantity || 0,
     unit: data.unit || '',
-    physical_quantity: 0, // deprecated — always 0
+    physical_quantity: data.physical_quantity || 0, // BUG-176: user-enterable, not deprecated
+    notes: data.notes || '',                        // BUG-199: propagate caller-provided notes (was dropped here)
+    category_id: data.category_id ?? null,          // BUG-199 Q-1: preserve category on edit so subsequent lookups don't reset to misc
   });
 
 /**
@@ -167,27 +208,7 @@ export const editExpenseEntry = (id, data) =>
 export const deleteExpenseEntry = (id) =>
   api.delete(`${EXPENSE_ENDPOINTS.DELETE_EXPENSE}/${id}`);
 
-/**
- * POST export expense report to Excel
- * @param {string} from  - "DD/MM/YYYY"
- * @param {string} to    - "DD/MM/YYYY"
- * @returns {Promise<AxiosResponse>}
- */
-export const exportExpenseReport = (from, to) =>
-  api.post(EXPENSE_ENDPOINTS.EXPORT_REPORT, { from, to });
-
-/**
- * POST import expense entries from file
- * @param {File} file
- * @returns {Promise<AxiosResponse>}
- */
-export const importExpenses = (file) => {
-  const formData = new FormData();
-  formData.append('file', file);
-  return api.post(EXPENSE_ENDPOINTS.IMPORT_EXPENSE, formData, {
-    headers: { 'Content-Type': 'multipart/form-data' },
-  });
-};
+// CR-074-A (2026-07-16): removed exportExpenseReport + importExpenses (dead code — no UI ever wired to these)
 
 // =============================================================================
 // UNIT PRICES

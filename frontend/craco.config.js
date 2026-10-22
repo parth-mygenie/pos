@@ -33,6 +33,8 @@ let webpackConfig = {
         '^react-router$': '<rootDir>/node_modules/react-router/dist/production/index.js',
         // Mirror the webpack '@' → src alias (needed by shadcn ui components in jest)
         '^@/(.*)$': '<rootDir>/src/$1',
+        // BUG-382: axios 1.x ships ESM (`"type":"module"`); CRA jest does not transform node_modules → map to CJS build
+        '^axios$': '<rootDir>/node_modules/axios/dist/node/axios.cjs',
       };
       // Add polyfill setup for TextEncoder/TextDecoder (React Router v7)
       jestConfig.setupFiles = [
@@ -56,6 +58,41 @@ let webpackConfig = {
       '@': path.resolve(__dirname, 'src'),
     },
     configure: (webpackConfig) => {
+
+      // ── Compat fix: Firebase 12.x + recharts 3.x with webpack 5 ──────────────
+      // 1. NormalModuleReplacementPlugin – swap CJS shims for ESM-friendly wrappers
+      const webpack = require('webpack');
+      webpackConfig.plugins = webpackConfig.plugins || [];
+      webpackConfig.plugins.push(
+        new webpack.NormalModuleReplacementPlugin(
+          /use-sync-external-store\/shim\/with-selector$/,
+          path.resolve(__dirname, 'webpack-shims/use-sync-external-store-with-selector.js')
+        ),
+        new webpack.NormalModuleReplacementPlugin(
+          /es-toolkit\/compat\/isPlainObject$/,
+          path.resolve(__dirname, 'node_modules/es-toolkit/compat/isPlainObject.mjs')
+        )
+      );
+
+      // 2. Downgrade export-presence errors → warnings (CJS modules webpack can't tree-shake)
+      webpackConfig.module = webpackConfig.module || {};
+      webpackConfig.module.parser = {
+        ...(webpackConfig.module.parser || {}),
+        javascript: {
+          ...(webpackConfig.module?.parser?.javascript || {}),
+          exportsPresence: 'warn',
+        },
+      };
+
+      // 3. Mark firebase + shim files as javascript/auto inside the oneOf block
+      const oneOfRule = webpackConfig.module.rules.find(r => r.oneOf);
+      if (oneOfRule) {
+        oneOfRule.oneOf.unshift(
+          { test: /node_modules\/(firebase|@firebase)\//, type: 'javascript/auto' },
+          { test: /webpack-shims\//, type: 'javascript/auto' }
+        );
+      }
+      // ─────────────────────────────────────────────────────────────────────────
 
       // Add ignored patterns to reduce watched directories
         webpackConfig.watchOptions = {
@@ -99,6 +136,12 @@ let webpackConfig = {
 };
 
 webpackConfig.devServer = (devServerConfig) => {
+  // webpack-dev-server 4.15+ removed these deprecated options that react-scripts 5.0.1 injects
+  delete devServerConfig.onBeforeSetupMiddleware;
+  delete devServerConfig.onAfterSetupMiddleware;
+  // 'https' is not a valid top-level option in webpack-dev-server 4.x (moved to 'server')
+  delete devServerConfig.https;
+
   // Add health check endpoints if enabled
   if (config.enableHealthCheck && setupHealthEndpoints && healthPluginInstance) {
     const originalSetupMiddlewares = devServerConfig.setupMiddlewares;

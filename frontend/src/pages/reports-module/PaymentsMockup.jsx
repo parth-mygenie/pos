@@ -149,7 +149,10 @@ const PaymentsMockup = () => {
   const schedules = restaurant?.schedules || [];
   const downloadRef = useRef(null);
 
-  const [isSidebarExpanded, setIsSidebarExpanded] = useState(false);
+  // BUG-361: persist sidebar state across reloads
+  const [isSidebarExpanded, setIsSidebarExpanded] = useState(
+    () => localStorage.getItem('mygenie_sidebar_expanded') === 'true'
+  );
 
   // Date range — default last 7 days
   const today = new Date();
@@ -177,7 +180,7 @@ const PaymentsMockup = () => {
 
   const draftDirty = fromDate !== appliedFrom || toDate !== appliedTo;
   const draftValid = fromDate && toDate && fromDate <= toDate;
-  const maxDays = 60;
+  const maxDays = 730; // BUG-353: lifted from 60 — uses fetchInsightsSales (backend-agg), no cap
   const draftRangeExceeded = draftValid && ((new Date(toDate) - new Date(fromDate)) / 86400000) > maxDays;
   const canApply = draftDirty && draftValid && !draftRangeExceeded && !isLoading;
 
@@ -210,13 +213,13 @@ const PaymentsMockup = () => {
   /* ── Aggregations (CR-049: transformed from backend response) ── */
   const analytics = useMemo(() => {
     if (!salesData) return null;
-    const s = salesData.summary || {};
+    const s = salesData.data?.summary || salesData.summary || {}; // BUG-194: data access fix (CR-049 regression)
     const totalRevenue = s.total_revenue || 0;
     const totalOrders = s.total_orders || 0;
     const settlementTotal = s.tab_settlement_total || 0;
 
     // Payment methods from backend
-    const backendPayments = salesData.payments || [];
+    const backendPayments = salesData.data?.payments || salesData.payments || []; // BUG-194
     let colorIdx = 0;
     const methods = METHOD_ORDER
       .filter(m => backendPayments.find(p => p.method === m))
@@ -252,7 +255,7 @@ const PaymentsMockup = () => {
     const tabRevenue = settlementTotal;
 
     // F-6: Daily charts removed but keep daily array for the breakdown table + export
-    const daily = (salesData.daily || []).map(d => ({
+    const daily = (salesData.data?.daily || salesData.daily || []).map(d => ({ // BUG-194
       date: d.date || '',
       total: d.revenue || 0,
       orders: d.orders || 0,
@@ -359,12 +362,12 @@ const PaymentsMockup = () => {
 
   return (
     <div className="flex h-screen bg-white font-sans" data-testid="payments-page">
-      <Sidebar isExpanded={isSidebarExpanded} setIsExpanded={setIsSidebarExpanded} onOpenSettings={() => {}} onOpenMenu={() => {}} onOpenCredit={() => {}} onRefresh={fetchData} isRefreshing={isLoading} isOrderEntryOpen={false} />
+      <Sidebar isExpanded={isSidebarExpanded} setIsExpanded={(v) => { setIsSidebarExpanded(v); localStorage.setItem('mygenie_sidebar_expanded', String(v)); }} onOpenSettings={() => {}} onOpenMenu={() => {}} onOpenCredit={() => {}} onRefresh={fetchData} isRefreshing={isLoading} isOrderEntryOpen={false} />
 
       <div className="flex-1 flex overflow-hidden">
         <main className="flex-1 flex flex-col overflow-hidden bg-zinc-50">
           {/* Header */}
-          <header className="flex items-center justify-between px-8 py-5 bg-white border-b border-zinc-200 shrink-0" data-testid="payments-header">
+          <header className="flex items-center justify-between px-8 py-5 bg-white border-b border-zinc-200 shrink-0 flex-wrap gap-y-3" data-testid="payments-header"> {/* BUG-555 */}
             <div className="flex items-center gap-4">
               <button className="p-2 hover:bg-zinc-100 rounded-lg transition-colors" data-testid="payments-back-btn" onClick={() => navigate('/reports-module/dashboard')}>
                 <ArrowLeft className="w-5 h-5 text-zinc-600" />
@@ -381,7 +384,7 @@ const PaymentsMockup = () => {
               </div>
             </div>
 
-            <div className="flex items-center gap-3">
+            <div className="flex items-center gap-3 flex-wrap">
               {/* Date range */}
               <div className={`flex items-center gap-2 px-3 py-2 border ${draftDirty && draftValid && !draftRangeExceeded ? 'border-[#F26B33]' : draftRangeExceeded ? 'border-red-400' : 'border-zinc-200'} bg-white rounded-lg ${isLoading ? 'opacity-50' : ''}`} data-testid="payments-daterange">
                 <CalendarIcon className="w-4 h-4 text-zinc-500" />

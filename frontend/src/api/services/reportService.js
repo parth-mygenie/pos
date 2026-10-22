@@ -397,77 +397,134 @@ export const getDailySalesReport = async (date) => {
   const dateStr = formatDateParam(date);
   const response = await api.post(API_ENDPOINTS.DAILY_SALES_REPORT, {
     from: dateStr,
+    to: dateStr, // BUG-393: was missing — backend ignores it but contract requires it
   });
   const data = response.data || {};
-  
+
   // Parse helper
   const toNum = (val) => parseFloat(val) || 0;
-  
+
   return {
     // Top Cards (Key Metrics)
-    sales: toNum(data.total_sales),
-    paidRevenue: toNum(data.paid_revenue),
+    sales:         toNum(data.total_sales),
+    paidRevenue:   toNum(data.paid_revenue),
     runningOrders: toNum(data.running_order),
-    orderTAB: toNum(data.orderTAB),
+    orderTAB:      toNum(data.orderTAB),
     unpaidRevenue: toNum(data.unpaid_revenue),
-    cancelled: toNum(data.cancel_revenue?.['Pre-Serve']) + toNum(data.cancel_revenue?.['Post-Serve']),
-    
-    // Payment Breakdown
+    cancelled:     toNum(data.cancel_revenue?.['Pre-Serve']  ?? data.cancel_revenue?.['Preparing']) +
+                   toNum(data.cancel_revenue?.['Post-Serve'] ?? data.cancel_revenue?.['Serve']), // BUG-405
+    profitLoss:    toNum(data.total_profit_loss), // CR-377: new KPI card
+
+    // Payment Breakdown — CR-377: +zomatoGold, +partial, +roomCheckin
     paymentBreakdown: {
-      cash: toNum(data.Cash),
-      card: toNum(data.Card),
-      upi: toNum(data.UPI),
-      room: toNum(data.paid_revenue_method?.order_payment?.Room),
+      cash:        toNum(data.Cash),
+      card:        toNum(data.Card),
+      upi:         toNum(data.UPI),
+      room:        toNum(data.paid_revenue_method?.order_payment?.Room),
+      zomatoGold:  toNum(data.paid_revenue_method?.order_payment?.Zomato_gold),     // CR-377
+      partial:     toNum(data.paid_revenue_method?.order_payment?.Partial),          // CR-377
+      roomCheckin: toNum(data.paid_revenue_method?.order_payment?.['Room Checkin']), // CR-377
     },
-    
+
     // Station Revenue (raw object for dynamic rendering)
     stationRevenue: data.station_revenue || {},
-    
-    // TAB (Credit)
+
+    // TAB (Credit) — CR-377: +creditCash, +creditCard, +creditUpi
     tabSettled: {
-      total: toNum(data.total_tab_payment),
-      cash: toNum(data.tab_cash),
-      card: toNum(data.tab_card),
-      upi: toNum(data.tab_upi),
+      total:      toNum(data.total_tab_payment),
+      cash:       toNum(data.tab_cash),
+      card:       toNum(data.tab_card),
+      upi:        toNum(data.tab_upi),
+      creditCash: toNum(data.paid_revenue_method?.tab_payment?.['Credit Cash']), // CR-377
+      creditCard: toNum(data.paid_revenue_method?.tab_payment?.['Credit Card']), // CR-377
+      creditUpi:  toNum(data.paid_revenue_method?.tab_payment?.['Credit UPI']),  // CR-377
     },
-    
-    // Room
+
+    // Room — CR-377: +advance, +checkout, +checkin sub-object; settledTotal from API
     room: {
-      orders: toNum(data.orderRoom),
-      settledCash: toNum(data.room_revenue?.['Room Cash']),
-      settledCard: toNum(data.room_revenue?.['Room Card']),
-      settledUPI: toNum(data.room_revenue?.['Room UPI']),
-      settledTotal: toNum(data.room_revenue?.['Room Cash']) + toNum(data.room_revenue?.['Room Card']) + toNum(data.room_revenue?.['Room UPI']),
+      orders:       toNum(data.orderRoom),
+      settledCash:  toNum(data.room_revenue?.['Room Cash']),
+      settledCard:  toNum(data.room_revenue?.['Room Card']),
+      settledUPI:   toNum(data.room_revenue?.['Room UPI']),
+      settledTotal: toNum(data.room_revenue?.['Room Total']),      // CR-377: from API (was computed sum)
+      advance:      toNum(data.room_revenue?.['Room advance']),    // CR-377
+      checkout:     toNum(data.room_revenue?.['Room Checkout']),   // CR-377
+      checkinCash:  toNum(data.room_checkin_revenue?.['Room Cash']),  // CR-377
+      checkinCard:  toNum(data.room_checkin_revenue?.['Room Card']),  // CR-377
+      checkinUpi:   toNum(data.room_checkin_revenue?.['Room UPI']),   // CR-377
+      checkinTab:   toNum(data.room_checkin_revenue?.['Room TAB']),   // CR-377
     },
-    
+
     // Aggregators
     aggregators: {
       zomato: toNum(data.aggrigator_order?.Zomato),
       swiggy: toNum(data.aggrigator_order?.swiggy),
     },
-    
+
     // Cancellations
+    // BUG-405: API returns 'Preparing'/'Serve' (OLD POS naming) not 'Pre-Serve'/'Post-Serve'.
+    // Read both key names as fallback so either naming convention works.
     cancellations: {
-      preServe: toNum(data.cancel_revenue?.['Pre-Serve']),
-      postServe: toNum(data.cancel_revenue?.['Post-Serve']),
+      preServe:  toNum(data.cancel_revenue?.['Pre-Serve']  ?? data.cancel_revenue?.['Preparing']),
+      postServe: toNum(data.cancel_revenue?.['Post-Serve'] ?? data.cancel_revenue?.['Serve']),
     },
-    
+
     // Deductions & Extras
     deductions: {
-      discount: toNum(data.discount),
-      tax: toNum(data.tax),
-      tips: toNum(data.tips),
+      discount:      toNum(data.discount),
+      tax:           toNum(data.tax),
+      tips:          toNum(data.tips),
       serviceCharge: toNum(data.service_charge),
-      roundOff: toNum(data.round_off),
+      roundOff:      toNum(data.round_off),
     },
-    
+
+    // Expense — CR-377: entirely new section (10 fields)
+    expense: {
+      total:        toNum(data.total_expense),
+      cash:         toNum(data.expense_cash),
+      card:         toNum(data.expense_card),
+      upi:          toNum(data.expense_upi),
+      cashDraw:     toNum(data.expense_cash_draw),
+      upiDrawer:    toNum(data.expense_upi_drawer),
+      bankTransfer: toNum(data.expense_bank_transfer),
+      store:        toNum(data.expense_store),
+      unpaid:       toNum(data.expense_unpaid),
+      others:       toNum(data.expense_others),
+    },
+
+    // Purchase — CR-377: entirely new section (10 fields)
+    purchase: {
+      total:         toNum(data.total_purchase),
+      cash:          toNum(data.purchase_cash),
+      card:          toNum(data.purchase_card),
+      upi:           toNum(data.purchase_upi),
+      cashDraw:      toNum(data.purchase_cash_draw),
+      upiDrawer:     toNum(data.purchase_upi_drawer),
+      bankTransfer:  toNum(data.purchase_bank_transfer),
+      unpaid:        toNum(data.purchase_unpaid),
+      others:        toNum(data.purchase_others),
+      combinedTotal: toNum(data.total_purchase_and_expense),
+    },
+
+    // Galla / Cash Drawer — CR-377: entirely new section (8 fields)
+    galla: {
+      openingBalance:  toNum(data.total_opening_balance),
+      todaySettlement: toNum(data.total_today_settlement),
+      lastDayPending:  toNum(data.last_day_pending),
+      balanceToSettle: toNum(data.total_balance_to_settle),
+      todayGalla:      parseInt(data.today_galla) || 0, // INTEGER confirmed in API
+      totalPaidCash:   toNum(data.total_paid_cash),
+      pilferage:       toNum(data.total_pilferage),
+      profitLoss:      toNum(data.total_profit_loss),
+    },
+
     // Date Range (business hours)
     dateRange: {
       from: data.from || null,
-      to: data.to || null,
+      to:   data.to   || null,
     },
-    
-    // Raw data for any additional needs
+
+    // Raw data for development
     ...(process.env.NODE_ENV === 'development' ? { _raw: data } : {}),
   };
 };
@@ -724,6 +781,93 @@ export const getRoomsForReport = async (filter, selectedDate, schedules) => {
 };
 
 
+// CR-094: Profit & Loss Report
+export const getProfitLossReport = async (fromDate, toDate) => {
+  const formatDDMMYYYY = (iso) => {
+    const d = new Date(iso);
+    return `${String(d.getDate()).padStart(2,'0')}/${String(d.getMonth()+1).padStart(2,'0')}/${d.getFullYear()}`;
+  };
+  const { data } = await api.post('/api/v1/vendoremployee/profit-loss-report', {
+    from: formatDDMMYYYY(fromDate),   // BUG-PL-A fix: API expects 'from'/'to', not 'date_from'/'date_to'
+    to: formatDDMMYYYY(toDate),
+  });
+  return data;
+};
+
+
+// BUG-353: private helper — split a date range into ≤ chunkSize-day windows
+// Returns [{ from: 'YYYY-MM-DD', to: 'YYYY-MM-DD' }, ...]
+const _splitBetaDateRange = (fromDate, toDate, chunkSize = 31) => {
+  const fmtD = (d) =>
+    `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  const start = new Date(fromDate + 'T00:00:00');
+  const end   = new Date(toDate   + 'T00:00:00');
+  if (Math.round((end - start) / 86400000) <= chunkSize) return [{ from: fromDate, to: toDate }];
+  const chunks = [];
+  let cur = new Date(start);
+  while (cur <= end) {
+    const chunkEnd  = new Date(cur.getTime() + (chunkSize - 1) * 86400000);
+    const actualEnd = chunkEnd > end ? end : chunkEnd;
+    chunks.push({ from: fmtD(cur), to: fmtD(actualEnd) });
+    cur = new Date(actualEnd.getTime() + 86400000);
+  }
+  return chunks;
+};
+
+// CR-117: Order Report Beta — combined backend-aggregated daily report
+// BUG-353: transparently chunks wide ranges (> 31d) into sequential API calls.
+//   onProgress(current, total) optional — page shows "month X of N" in spinner.
+//   Single-chunk path (≤ 31d) is identical to original — no regression risk.
+export const getOrderReportBetaCombined = async (fromDate, toDate, onProgress) => {
+  const chunks = _splitBetaDateRange(fromDate, toDate);
+  if (chunks.length === 1) {
+    // BUG-353: fast path — single chunk, behaviour identical to pre-fix
+    const { data } = await api.post(API_ENDPOINTS.ORDER_REPORT_BETA_COMBINED, {
+      from: fromDate,
+      to: toDate,
+    });
+    return data;
+  }
+  // BUG-353: chunked path — fetch sequentially, merge daily_reports arrays
+  const allDailyReports = [];
+  for (let i = 0; i < chunks.length; i++) {
+    if (onProgress) onProgress(i + 1, chunks.length);
+    const { data: chunkData } = await api.post(API_ENDPOINTS.ORDER_REPORT_BETA_COMBINED, {
+      from: chunks[i].from,
+      to: chunks[i].to,
+    });
+    allDailyReports.push(...(chunkData.daily_reports || []));
+  }
+  // sort descending by date — matches single-call sort order
+  allDailyReports.sort((a, b) => (b.date || '').localeCompare(a.date || ''));
+  return { daily_reports: allDailyReports }; // BUG-353: same shape as single-call response
+};
+
+// CR-117: Order Report Beta — Excel export
+export const exportOrderReportBetaExcel = async (fromDate, toDate) => {
+  const response = await api.post(API_ENDPOINTS.ORDER_REPORT_BETA_EXCEL, {
+    from: fromDate,
+    to: toDate,
+  }, { responseType: 'blob' });
+  if (response.headers?.['content-type']?.includes('application/json')) {
+    const text = await response.data.text();
+    const json = JSON.parse(text);
+    if (json.download_url) {
+      window.open(json.download_url, '_blank');
+      return json;
+    }
+  }
+  const url = window.URL.createObjectURL(new Blob([response.data]));
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `order-report-beta-${fromDate}-to-${toDate}.xlsx`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  window.URL.revokeObjectURL(url);
+  return { success: true };
+};
+
 export default {
   getPaidOrders,
   getPaidOrdersFiltered,
@@ -741,4 +885,6 @@ export default {
   getSingleOrderRoom,
   getActiveSrmIds,
   getRoomsForReport,
+  getOrderReportBetaCombined,
+  exportOrderReportBetaExcel,
 };

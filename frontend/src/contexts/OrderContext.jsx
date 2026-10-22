@@ -48,9 +48,13 @@ export const OrderProvider = ({ children }) => {
   const mergeRunningOrders = useCallback((freshOrders) => {
     if (!Array.isArray(freshOrders)) return;
     setOrdersState((prev) => {
-      console.log(`[OrderContext] mergeRunningOrders: ${prev.length} existing → ${freshOrders.length} fresh`);
-      ordersRef.current = freshOrders;
-      return freshOrders;
+      // BUG-250: Preserve aggregator orders during merge. getRunningOrders()
+      // only returns POS/Web orders — aggregator orders from UrbanPiper must survive.
+      const aggregatorOrders = prev.filter(o => o.isAggregator === true);
+      const merged = [...freshOrders, ...aggregatorOrders];
+      console.log(`[OrderContext] mergeRunningOrders: ${prev.length} existing → ${freshOrders.length} fresh + ${aggregatorOrders.length} aggregator preserved`);
+      ordersRef.current = merged;
+      return merged;
     });
   }, []);
 
@@ -335,6 +339,7 @@ export const OrderProvider = ({ children }) => {
           // Room pill, Room block, Grand-Total Stack row, and combined
           // Checkout amount. Null for non-room orders.
           roomInfo: order.roomInfo || null,
+          orderDiscountJson: order.orderDiscountJson || null, // BUG-595: owner-applied role-base discount must survive orderItemsByTableId rebuild so dine-in table CPP receives it after socket update
         };
         if (!map[order.tableId]) {
           map[order.tableId] = [];

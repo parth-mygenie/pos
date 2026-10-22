@@ -80,10 +80,16 @@ const LoginPage = () => {
       console.log('[Login] Proceeding with FCM token:', fcmToken ? 'YES' : 'NO');
       
       // Call login via AuthContext with FCM token in payload
-      await login({ email, password, fcmToken }, rememberMe);
-      
-      // Navigate to loading screen on success
-      navigate("/loading", { replace: true });
+      const authData = await login({ email, password, fcmToken }, rememberMe);
+
+      // CR-166: admin login_type (CS/franchise) → restaurant picker; employee → normal boot
+      // Set ref BEFORE navigate so LoginPage useEffect does not double-navigate (isAuthenticated
+      // becomes true from setToken in AuthContext and could trigger the "already authenticated" path)
+      hasNavigatedRef.current = true;
+      navigate(
+        authData?.loginType === 'admin' ? '/restaurant-picker' : '/loading',
+        { replace: true }
+      );
       
     } catch (error) {
       // Show error toast with API message
@@ -97,19 +103,14 @@ const LoginPage = () => {
     }
   };
 
+  // BUG-262: Changed from "Coming Soon" to production-appropriate message
   const handleForgotPassword = () => {
     toast({
-      title: "Coming Soon",
-      description: "Forgot password functionality will be available soon.",
+      title: "Reset Password",
+      description: "Please contact your administrator to reset your password.",
     });
   };
-
-  const handleRequestDemo = () => {
-    toast({
-      title: "Coming Soon", 
-      description: "Demo request functionality will be available soon.",
-    });
-  };
+  // BUG-262: handleRequestDemo removed — no demo button in production
 
   return (
     <div 
@@ -264,7 +265,7 @@ const LoginPage = () => {
           className="text-center text-xs mt-8"
           style={{ color: COLORS.grayText }}
         >
-          © Mygenie 2025. HOSIGENIE HOSPITALITY SERVICES PRIVATE LIMITED. All Rights Reserved.
+          © Mygenie {new Date().getFullYear()}. HOSIGENIE HOSPITALITY SERVICES PRIVATE LIMITED. All Rights Reserved.
         </p>
       </div>
     </div>

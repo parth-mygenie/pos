@@ -13,6 +13,7 @@ const api = axios.create({
   headers: {
     'Content-Type': 'application/json',
     'Accept': 'application/json',
+    'X-localization': 'en', // BUG-198 + BUG-197: required by Laravel backend for JSON responses
   },
   timeout: 60000, // 60 seconds
 });
@@ -20,9 +21,13 @@ const api = axios.create({
 // Request interceptor - Add auth token
 api.interceptors.request.use(
   (config) => {
-    const token = localStorage.getItem('auth_token');
-    if (token) {
-      config.headers.Authorization = `Bearer ${token}`;
+    // CR-166: Only set AUTH_TOKEN if Authorization not already explicitly set.
+    // commonAuthService passes COMMON_TOKEN explicitly — must not be overwritten.
+    if (!config.headers.Authorization) {
+      const token = localStorage.getItem('auth_token');
+      if (token) {
+        config.headers.Authorization = `Bearer ${token}`;
+      }
     }
     return config;
   },
@@ -39,15 +44,27 @@ api.interceptors.response.use(
   (error) => {
     // Handle 401 Unauthorized - Token expired or invalid
     if (error.response?.status === 401) {
-      // Clear token and redirect to login
-      localStorage.removeItem('auth_token');
-      localStorage.removeItem('remember_me');
+      // CR-166 BUG2: Skip ALL local-state cleanup + redirect during intentional logout.
+      // logoutFromOutlet() sets this flag before the API call and handles its own
+      // cleanup + navigation after. Removing auth_token here would trigger ProtectedRoute
+      // to redirect to "/" before React Router's navigate('/restaurant-picker') can run.
+      const isIntentionalLogout = sessionStorage.getItem('intentional_logout');
       
-      // Only redirect if not already on login page
-      if (window.location.pathname !== '/') {
-        // Signal intentional navigation so beforeunload doesn't show dialog
-        sessionStorage.setItem('auth_redirect', '1');
-        window.location.href = '/';
+      if (!isIntentionalLogout) {
+        // Clear token and redirect to login
+        localStorage.removeItem('auth_token');
+        localStorage.removeItem('remember_me');
+        // IMP-124-GAP-2 (CR-124): also clear CRM token + channel-visibility on 401 auto-logout
+        // BUG-300: crm_token moved from sessionStorage → localStorage
+        localStorage.removeItem('crm_token');
+        localStorage.removeItem('mygenie_channel_visibility');
+        
+        // Only redirect if not already on login page
+        if (window.location.pathname !== '/') {
+          // Signal intentional navigation so beforeunload doesn't show dialog
+          sessionStorage.setItem('auth_redirect', '1');
+          window.location.href = '/';
+        }
       }
     }
     

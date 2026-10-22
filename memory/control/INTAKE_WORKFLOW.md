@@ -49,15 +49,30 @@ The agent enters intake mode when the owner says anything like:
 **Area** (agent suggests based on description, owner confirms):
 > "This sounds like it's in **[Reports / Dashboard / Order Entry / etc.]** — is that right?"
 
-Options if agent can't auto-detect:
-1. Dashboard (live orders, cards, channels)
-2. Order Entry / Cart / Collect Bill
-3. Reports (Audit / Room / Orders)
-4. Settings / Menu Management
-5. Delivery / Rider
-6. Room / Check-in
-7. Login / Loading / Permissions
-8. Print / KOT / Bill
+**MANDATORY: Area must be one of these exact values (brief-pos-agent.md POS area list):**
+
+| Value | Use for |
+|---|---|
+| `Printing / Printer Agent` | KOT, bill print, printer agent, LAN printer, print jobs |
+| `Reports / Analytics` | Audit, Daily, Settlement, Order reports, analytics, exports, dashboards |
+| `PMS / Rooms` | PMS front desk, check-in, arrivals, tape chart, folio, housekeeping, bookings |
+| `Inventory / Stock` | Stock, ingredients, recipes, purchases, wastage, smart purchase |
+| `Payments / Coupons / Credit` | Coupons, discounts, billing, payment flows, loyalty, credit, GST on bills, bank transfer IDs |
+| `Settings / Configuration` | Restaurant settings, configuration, setup wizard tiles |
+| `Permissions / Security` | Role gating, permissions, security, protected routes |
+| `Menu / Order Entry` | Menu items, categories, add-ons, popular food, active menu, order-taking flow |
+| `Aggregator / Sockets` | Sockets, aggregator (Swiggy/Zomato), FCM notifications, buzzer, aggregator toggle |
+| `Delivery` | Delivery assign, rider login, delivery-specific order flow |
+| `CRM / Customer Intelligence` | Customer intelligence, customer notes, CRM sync, loyalty config via CRM |
+| `Tooling / Control Layer` | Agent prompts, scripts, registry sync, developer tooling, area migration |
+| `Other` | Cross-cutting issues (tablet layout across all screens), items with no clear single owner |
+| `Old POS` | **NOT a valid module.** Use title prefix "Old POS —" + assign a real module above. |
+
+**Module assignment rule (OD-428-02, locked 2026-10-15):**
+> Assign by the **primary user mental model** — what the user thinks the feature IS, not where it lives in code or where the bug first appears.
+> *Example: A KOT issue → Printing/Printer Agent (not Menu/Order Entry, even though triggered during ordering). A backward GST issue → Payments/Coupons/Credit (not Menu/Order Entry, even though it affects item pricing).*
+
+If the item spans two modules, pick the one the owner would report it under.
 9. Socket / Notifications
 10. Other
 

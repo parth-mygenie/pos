@@ -15,13 +15,18 @@ const InputField = ({ label, value, onChange, type = "text", required, placehold
     <input
       type={type}
       value={value ?? ""}
-      onChange={(e) => onChange(type === "number" ? (parseFloat(e.target.value) || 0) : e.target.value)}
+      onChange={(e) => { // BUG-394: block special chars — silent reject (Option A)
+        if (type !== "number") { onChange(e.target.value); return; }
+        const n = parseFloat(e.target.value);
+        if (!isNaN(n) && n >= 0) onChange(n);
+      }}
       onFocus={(e) => { if (type === "number" && (e.target.value === "0" || e.target.value === 0)) e.target.value = ""; }}
       onBlur={(e) => { if (type === "number" && e.target.value === "") onChange(0); }}
       placeholder={placeholder}
       className="w-full px-3 py-2 text-sm rounded-lg border outline-none focus:ring-2 focus:ring-orange-100 focus:border-orange-300"
       style={{ borderColor: COLORS.borderGray }}
       {...props}
+      onWheel={type === 'number' ? (e => e.target.blur()) : undefined} // BUG-392
     />
   </div>
 );
@@ -95,7 +100,12 @@ const VariationOptionRow = ({ option, onChange, onDelete }) => (
       <input
         type="number"
         value={option.optionPrice}
-        onChange={(e) => onChange({ ...option, optionPrice: e.target.value })}
+        onChange={(e) => { // BUG-394: block special chars + keep optionPrice as numeric string
+          const n = parseFloat(e.target.value);
+          if (!isNaN(n) && n >= 0) onChange({ ...option, optionPrice: String(n) });
+        }}
+        onFocus={e => { if (e.target.value === '0' || e.target.value === 0) e.target.value = ''; }} // BUG-394
+        onWheel={e => e.target.blur()} // BUG-392: VariationOptionRow price — missed in original BUG-392 impl (separate component from InputField)
         placeholder="0"
         className="w-full pl-7 pr-3 py-2 text-sm rounded-lg border outline-none text-right focus:ring-2 focus:ring-orange-100"
         style={{ borderColor: COLORS.borderGray }}
@@ -165,12 +175,12 @@ const VariationGroup = ({ variation, index, onChange, onDelete }) => {
               <>
                 <div className="flex items-center gap-1">
                   <span className="text-xs" style={{ color: COLORS.grayText }}>Min:</span>
-                  <input type="number" value={variation.min || 0} min={0} onChange={(e) => updateField('min', parseInt(e.target.value) || 0)}
+                  <input type="number" value={variation.min || 0} min={0} onWheel={e => e.target.blur()} onFocus={e => { if (e.target.value === '0' || e.target.value === 0) e.target.value = ''; }} onChange={(e) => { const n = parseInt(e.target.value); if (!isNaN(n) && n >= 0) updateField('min', n); }} // BUG-392 // BUG-394
                     className="w-12 px-2 py-1 text-xs rounded border outline-none text-center" style={{ borderColor: COLORS.borderGray }} />
                 </div>
                 <div className="flex items-center gap-1">
                   <span className="text-xs" style={{ color: COLORS.grayText }}>Max:</span>
-                  <input type="number" value={variation.max || 0} min={0} onChange={(e) => updateField('max', parseInt(e.target.value) || 0)}
+                  <input type="number" value={variation.max || 0} min={0} onWheel={e => e.target.blur()} onFocus={e => { if (e.target.value === '0' || e.target.value === 0) e.target.value = ''; }} onChange={(e) => { const n = parseInt(e.target.value); if (!isNaN(n) && n >= 0) updateField('max', n); }} // BUG-392 // BUG-394
                     className="w-12 px-2 py-1 text-xs rounded border outline-none text-center" style={{ borderColor: COLORS.borderGray }} />
                 </div>
               </>
@@ -200,14 +210,16 @@ const VariationGroup = ({ variation, index, onChange, onDelete }) => {
 
 // ── Main ProductForm ────────────────────────────────────────────────
 
-const ProductForm = ({ product, categories, addons: allAddons, currencySymbol, menuType, onBack, onSave, onRefreshAddons }) => {
+const ProductForm = ({ product, categories, addons: allAddons, currencySymbol, menuType, clients, onBack, onSave, onRefreshAddons }) => { // CR-140
   const isNew = !product;
   const [form, setForm] = useState({});
   const [variations, setVariations] = useState([]);
   const [saving, setSaving] = useState(false);
+  const [useItemImageForSwiggy, setUseItemImageForSwiggy] = useState(true); // CR-373
   const [selectedAddonIds, setSelectedAddonIds] = useState([]);
   const [newAddonName, setNewAddonName] = useState("");
   const [newAddonPrice, setNewAddonPrice] = useState("");
+  const [newAddonVeg, setNewAddonVeg] = useState(1); // CR-142
   const { toast } = useToast();
 
   useEffect(() => {
@@ -225,8 +237,8 @@ const ProductForm = ({ product, categories, addons: allAddons, currencySymbol, m
         takeaway: product.availability?.takeaway ?? true,
         isComplementary: product.isComplementary || false,
         complementaryPrice: product.complementaryPrice || 0,
-        taxPercentage: product.tax?.percentage || 0,
-        taxType: product.tax?.type || "GST",
+        taxPercentage: menuType === 'Aggregator' ? 5 : (product.tax?.percentage || 0), // BUG-391: Aggregator always 5%
+        taxType: menuType === 'Aggregator' ? 'GST' : (product.tax?.type || "GST"),     // BUG-391: Aggregator always GST
         taxCalc: product.taxCalc || 'Exclusive',
         discount: product.discount || 0,
         discountType: product.discountType || "percent",
@@ -250,6 +262,12 @@ const ProductForm = ({ product, categories, addons: allAddons, currencySymbol, m
         itemUnitPrice: product.itemUnitPrice || 0,
         imageFile: null,
         imagePreview: product.productImage || null,
+        swiggyImageFile:    null,                        // BUG-327
+        swiggyImagePreview: product.swiggyImage || null, // BUG-327: load existing Swiggy image
+        swiggy:            product.swiggy !== false,
+        zomato:            product.zomato !== false,
+        clientId:          product.clientId ?? 0,
+        swiggyPackingChrg: product.swiggyPackingChrg || false, // BUG-326
       });
       setVariations((product.variations || []).map((v) => ({
         name: v.name,
@@ -259,13 +277,14 @@ const ProductForm = ({ product, categories, addons: allAddons, currencySymbol, m
         max: v.max || 0,
         values: (v.values || []).map((opt) => ({ label: opt.name, optionPrice: String(opt.price || 0) })),
       })));
+      setUseItemImageForSwiggy(!product.swiggyImage); // CR-373: false if existing Swiggy image
     } else {
       setForm({
         productName: "", description: "", basePrice: 0, categoryId: categories?.[0]?.categoryId || "",
         itemCode: "", foodType: "veg",
         dineIn: true, delivery: true, takeaway: true,
         isComplementary: false, complementaryPrice: 0,
-        taxPercentage: 0, taxType: "GST", taxCalc: 'Exclusive',
+        taxPercentage: menuType === 'Aggregator' ? 5 : 0, taxType: "GST", taxCalc: 'Exclusive', // BUG-391: new Aggregator items default to 5%
         discount: 0, discountType: "percent", prepTimeMin: 15, serveTimeMin: 10,
         allergens: "", kcal: 0, giveDiscount: true, liveWeb: true,
         isInventory: false, packedFood: false, isOutOfStock: false, isDisabled: false,
@@ -274,10 +293,14 @@ const ProductForm = ({ product, categories, addons: allAddons, currencySymbol, m
         // CR-010: Weight-based billing fields
         itemUnit: '', itemUnitPrice: 0,
         imageFile: null, imagePreview: null,
+        swiggyImageFile: null, swiggyImagePreview: null, // BUG-327
+        // CR-140 GAP-2: Aggregator defaults for new items
+        swiggy: true, zomato: true, clientId: 0, swiggyPackingChrg: false, // BUG-326
       });
       setVariations([]);
+      setUseItemImageForSwiggy(true); // CR-373: reset to default for new items
     }
-  }, [product, categories]);
+  }, [product, categories, menuType]); // BUG-391: menuType change re-applies Aggregator tax defaults
 
   const update = (key, val) => setForm((p) => ({ ...p, [key]: val }));
   const addVariation = () => setVariations((v) => [...v, { name: '', type: 'single', required: 'off', min: 0, max: 0, values: [] }]);
@@ -322,8 +345,9 @@ const ProductForm = ({ product, categories, addons: allAddons, currencySymbol, m
               style={{ borderColor: COLORS.borderGray }}
             />
           </div>
+          {/* BUG-390: Item image upload — shown for all menu types */}
           <div className="py-1.5">
-            <label className="block text-xs font-medium mb-1" style={{ color: COLORS.grayText }}>Product Image</label>
+            <label className="block text-xs font-medium mb-1" style={{ color: COLORS.grayText }}>Item Image</label>
             <div className="flex items-center gap-3">
               {form.imagePreview && (
                 <div className="relative w-16 h-16 rounded-lg overflow-hidden border" style={{ borderColor: COLORS.borderGray }}>
@@ -344,7 +368,67 @@ const ProductForm = ({ product, categories, addons: allAddons, currencySymbol, m
               </label>
             </div>
           </div>
+          {/* CR-373: Swiggy image — toggle (Use same as Item Image / Upload different) */}
+          {menuType === 'Aggregator' && (
+            <div className="py-1.5">
+              <label className="block text-xs font-medium mb-1" style={{ color: COLORS.grayText }}>Swiggy Image</label>
+              <div className="flex gap-2 mb-2">
+                {[true, false].map((val) => (
+                  <button key={String(val)} type="button"
+                    onClick={() => setUseItemImageForSwiggy(val)}
+                    className={`px-3 py-1 text-xs rounded-full border transition-colors ${
+                      useItemImageForSwiggy === val ? 'text-white border-transparent' : 'border-gray-200 hover:bg-orange-50'
+                    }`}
+                    style={useItemImageForSwiggy === val ? { background: COLORS.primaryOrange } : { color: COLORS.grayText }}
+                    data-testid={val ? 'swiggy-use-item-image' : 'swiggy-upload-different'}>
+                    {val ? 'Use same as Item Image' : 'Upload different image'}
+                  </button>
+                ))}
+              </div>
+              {!useItemImageForSwiggy && (
+                <div className="flex items-center gap-3">
+                  {form.swiggyImagePreview && (
+                    <div className="relative w-16 h-16 rounded-lg overflow-hidden border" style={{ borderColor: COLORS.borderGray }}>
+                      <img src={form.swiggyImagePreview} alt="Swiggy preview" className="w-full h-full object-cover" />
+                      <button onClick={() => { update("swiggyImageFile", null); update("swiggyImagePreview", null); }}
+                        className="absolute top-0 right-0 p-0.5 bg-white/80 rounded-bl">
+                        <XIcon className="w-3 h-3" style={{ color: "#EF4444" }} />
+                      </button>
+                    </div>
+                  )}
+                  <label className="flex items-center gap-2 px-4 py-2 text-sm rounded-lg border cursor-pointer hover:bg-gray-50 transition-colors"
+                    style={{ borderColor: COLORS.borderGray, color: COLORS.grayText }}
+                    data-testid="swiggy-image-upload-btn">
+                    <Upload className="w-4 h-4" />
+                    {form.swiggyImagePreview ? "Change" : "Upload"}
+                    <input type="file" accept="image/*" className="sr-only" onChange={(e) => {
+                      const file = e.target.files?.[0];
+                      if (file) { update("swiggyImageFile", file); update("swiggyImagePreview", URL.createObjectURL(file)); }
+                    }} />
+                  </label>
+                </div>
+              )}
+            </div>
+          )}
         </div>
+
+        {/* ── Aggregator: Platform Sync ────────────────────────── CR-140 */}
+        {menuType === 'Aggregator' && (
+          <Section title="Platform Sync" defaultOpen={true}>
+            <div className="pt-2">
+              <ToggleField label="Swiggy" checked={form.swiggy} onChange={v => update('swiggy', v)}
+                description="Show on Swiggy" />
+              <ToggleField label="Zomato" checked={form.zomato} onChange={v => update('zomato', v)}
+                description="Show on Zomato" />
+              {/* BUG-326: Swiggy packing charge — aggregator only */}
+              <ToggleField label="Swiggy Packing Charge" checked={form.swiggyPackingChrg}
+                onChange={v => update('swiggyPackingChrg', v)}
+                description="Apply Swiggy packing charge (aggregator only)" />
+              <SelectField label="Brand" value={form.clientId} onChange={v => update('clientId', Number(v))}
+                options={[{ value: 0, label: 'Main Brand' }, ...(clients || []).map(c => ({ value: c.id, label: c.name }))]} />
+            </div>
+          </Section>
+        )}
 
         {/* ── Pricing & Tax ──────────────────────────────────────── */}
         <Section title="Pricing & Tax" defaultOpen={true}>
@@ -353,13 +437,29 @@ const ProductForm = ({ product, categories, addons: allAddons, currencySymbol, m
             <SelectField label="Category" value={form.categoryId} onChange={(v) => update("categoryId", v)} required
               options={(categories || []).map((c) => ({ value: c.categoryId, label: c.categoryName }))} />
           </div>
-          <div className="grid grid-cols-3 gap-3">
-            <SelectField label="Tax Type" value={form.taxType} onChange={(v) => update("taxType", v)}
-              options={[{ value: "GST", label: "GST" }, { value: "VAT", label: "VAT" }, { value: "None", label: "None" }]} />
-            <InputField label="Tax %" value={form.taxPercentage} onChange={(v) => update("taxPercentage", v)} type="number" min={0} max={100} step={0.01} />
-            <SelectField label="Tax Calculation" value={form.taxCalc} onChange={(v) => update("taxCalc", v)}
-              options={[{ value: "Inclusive", label: "Inclusive" }, { value: "Exclusive", label: "Exclusive" }]} />
-          </div>
+          {/* BUG-391: Aggregator — tax fields locked read-only (GST 5% mandatory) */}
+          {menuType === 'Aggregator' ? (
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <p className="text-xs font-medium text-muted-foreground mb-1">Tax Type</p>
+                <p className="text-sm px-3 py-2 bg-muted rounded-md text-foreground">
+                  GST <span className="text-xs text-muted-foreground ml-1">(mandatory)</span>
+                </p>
+              </div>
+              <div>
+                <p className="text-xs font-medium text-muted-foreground mb-1">Tax %</p>
+                <p className="text-sm px-3 py-2 bg-muted rounded-md text-foreground">
+                  5% <span className="text-xs text-muted-foreground ml-1">(mandatory)</span>
+                </p>
+              </div>
+            </div>
+          ) : (
+            <div className="grid grid-cols-2 gap-3"> {/* BUG-359: removed Tax Calculation — always Exclusive, item-level only */}
+              <SelectField label="Tax Type" value={form.taxType} onChange={(v) => update("taxType", v)}
+                options={[{ value: "GST", label: "GST" }, { value: "VAT", label: "VAT" }, { value: "None", label: "None" }]} />
+              <InputField label="Tax %" value={form.taxPercentage} onChange={(v) => update("taxPercentage", v)} type="number" min={0} max={100} step={0.01} />
+            </div>
+          )}
           <ToggleField label="Allow Discount" checked={form.giveDiscount} onChange={(v) => update("giveDiscount", v)} />
           {form.giveDiscount && (
             <div className="grid grid-cols-2 gap-3">
@@ -440,11 +540,24 @@ const ProductForm = ({ product, categories, addons: allAddons, currencySymbol, m
               {(allAddons || []).map((a) => {
                 const isSelected = selectedAddonIds.includes(a.id);
                 return (
-                  <label key={a.id} className="flex items-center gap-2 p-1.5 rounded cursor-pointer hover:bg-gray-50" data-testid={`addon-option-${a.id}`}>
+                  <label key={a.id} className="flex items-center gap-2 p-1.5 rounded cursor-pointer hover:bg-gray-50"
+                    style={{ opacity: a.status === 0 ? 0.45 : 1 }}
+                    data-testid={`addon-option-${a.id}`}>
                     <input type="checkbox" checked={isSelected}
                       onChange={() => setSelectedAddonIds((prev) => isSelected ? prev.filter((id) => id !== a.id) : [...prev, a.id])}
                       className="w-3.5 h-3.5 rounded" style={{ accentColor: COLORS.primaryOrange }} />
-                    <span className="text-sm flex-1" style={{ color: COLORS.darkText }}>{a.name}</span>
+                    {/* CR-142: veg dot */}
+                    <div className="w-2.5 h-2.5 rounded-sm flex-shrink-0" style={{ background:
+                      a.veg === 1 ? COLORS.primaryGreen :
+                      a.veg === 2 ? '#EF4444' :
+                      a.veg === 3 ? '#F59E0B' : '#9CA3AF' }} />
+                    <span className="text-sm flex-1" style={{ color: COLORS.darkText }}>
+                      {a.name}
+                      {a.status === 0 && <span className="text-xs ml-1.5 text-gray-400">(inactive)</span>}
+                    </span>
+                    {a.weight > 0 && (
+                      <span className="text-xs px-1 rounded" style={{ background: '#f1f5f9', color: '#64748b' }}>{a.weight}g</span>
+                    )}
                     <span className="text-xs" style={{ color: COLORS.grayText }}>{currencySymbol}{a.price}</span>
                   </label>
                 );
@@ -458,14 +571,21 @@ const ProductForm = ({ product, categories, addons: allAddons, currencySymbol, m
                 <input value={newAddonName} onChange={(e) => setNewAddonName(e.target.value)} placeholder="New add-on name"
                   className="w-full px-2 py-1.5 text-xs rounded border outline-none" style={{ borderColor: COLORS.borderGray }} data-testid="new-addon-name" />
               </div>
+              {/* CR-142: veg type select */}
+              <select value={newAddonVeg} onChange={e => setNewAddonVeg(Number(e.target.value))}
+                className="px-2 py-1.5 text-xs rounded border outline-none" style={{ borderColor: COLORS.borderGray, width: 72 }}>
+                <option value={1}>Veg</option>
+                <option value={2}>Non-V</option>
+                <option value={3}>Egg</option>
+              </select>
               <div className="w-20">
-                <input type="number" value={newAddonPrice} onChange={(e) => setNewAddonPrice(e.target.value)} placeholder="Price"
+                <input type="number" value={newAddonPrice} onWheel={e => e.target.blur()} onChange={(e) => setNewAddonPrice(e.target.value)} placeholder="Price" // BUG-392
                   className="w-full px-2 py-1.5 text-xs rounded border outline-none" style={{ borderColor: COLORS.borderGray }} min={0} data-testid="new-addon-price" />
               </div>
               <button onClick={async () => {
                 if (!newAddonName.trim() || !newAddonPrice) return;
                 try {
-                  await menuService.addAddon(newAddonName.trim(), newAddonPrice);
+                  await menuService.addAddon({ name: newAddonName.trim(), price: newAddonPrice, veg: newAddonVeg }); // CR-142
                   toast({ title: "Added", description: `Add-on "${newAddonName}" created.` });
                   setNewAddonName(""); setNewAddonPrice("");
                   if (onRefreshAddons) onRefreshAddons();
@@ -519,16 +639,27 @@ const ProductForm = ({ product, categories, addons: allAddons, currencySymbol, m
             setSaving(true);
             try {
               const foodInfo = toAPI.foodInfo({ ...form, foodFor: menuType || 'Normal', addonIds: selectedAddonIds, variations: variations });
+              const effectiveSwiggyFile = useItemImageForSwiggy ? form.imageFile : form.swiggyImageFile; // CR-373
               if (isNew) {
-                await menuService.addFood(foodInfo, form.imageFile);
+                if (menuType === 'Aggregator') {
+                  // BUG-327: flat multipart to support image upload
+                  await menuService.addFoodAggregatorMultipart(foodInfo, form.imageFile, effectiveSwiggyFile);
+                } else {
+                  await menuService.addFood(foodInfo, form.imageFile);
+                }
               } else {
-                await menuService.editFood(product.productId, foodInfo, form.imageFile);
+                if (menuType === 'Aggregator') {
+                  // BUG-327: flat multipart, no food_info wrapper
+                  await menuService.editFoodAggregator(product.productId, foodInfo, form.imageFile, effectiveSwiggyFile);
+                } else {
+                  await menuService.editFood(product.productId, foodInfo, form.imageFile);
+                }
               }
               toast({ title: "Saved", description: isNew ? "Product added." : "Product updated." });
               onSave();
             } catch (err) {
               console.error('[ProductForm] Save failed:', err);
-              toast({ title: "Error", description: err.readableMessage, variant: "destructive" });
+              toast({ title: "Error", description: `"${form.name || product?.name || 'Item'}": ${err.readableMessage}`, variant: "destructive" }); // BUG-147: prefix item name
             } finally {
               setSaving(false);
             }

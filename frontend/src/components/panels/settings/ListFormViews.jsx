@@ -2,9 +2,9 @@ import { useState } from "react";
 import { COLORS } from "../../../constants";
 import { useRestaurant, useSettings } from "../../../contexts";
 import {
-  ListItem, ListHeader, FormContainer, BoolBadge,
+  ListItem, ListHeader, FormContainer,
   TextInput, NumberInput, TimeInput, SelectInput, ToggleSwitch,
-} from "./shared";
+} from "./shared"; // CR-133: BoolBadge import moved into printerConfig/
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Pattern B: List + Add/Edit Form Views
@@ -180,82 +180,18 @@ export const DiscountTypesView = () => {
 };
 
 // ─── Printers ───────────────────────────────────────────────────────────────
-export const PrintersView = () => {
-  const { printers } = useRestaurant();
-  const [viewMode, setViewMode] = useState("list");
-  const [editingItem, setEditingItem] = useState(null);
-  const [form, setForm] = useState({});
-
-  const handleAdd = () => {
-    setEditingItem(null);
-    setForm({ name: "", type: "kitchen", paperSize: "80", isActive: true });
-    setViewMode("form");
-  };
-
-  const handleEdit = (p) => {
-    setEditingItem(p);
-    setForm({ name: p.name || "", type: p.type || "kitchen", paperSize: String(p.paperSize || "80"), isActive: p.isActive ?? true });
-    setViewMode("form");
-  };
-
-  const handleBack = () => {
-    setViewMode("list");
-    setEditingItem(null);
-    setForm({});
-  };
-
-  const update = (key, val) => setForm((prev) => ({ ...prev, [key]: val }));
-
-  if (viewMode === "form") {
-    return (
-      <FormContainer title={editingItem ? "Edit Printer" : "Add Printer"} onBack={handleBack} onSave={handleBack}>
-        <TextInput label="Name" value={form.name} onChange={(v) => update("name", v)} required />
-        <SelectInput
-          label="Type"
-          value={form.type}
-          onChange={(v) => update("type", v)}
-          options={[
-            { value: "kitchen", label: "Kitchen" },
-            { value: "bar", label: "Bar" },
-            { value: "bill", label: "Bill" },
-            { value: "kds", label: "KDS" },
-          ]}
-        />
-        <SelectInput
-          label="Paper Size"
-          value={form.paperSize}
-          onChange={(v) => update("paperSize", v)}
-          options={[
-            { value: "58", label: "58mm" },
-            { value: "80", label: "80mm" },
-          ]}
-        />
-        <ToggleSwitch label="Active" checked={form.isActive} onChange={(v) => update("isActive", v)} />
-      </FormContainer>
-    );
-  }
-
-  return (
-    <div>
-      <ListHeader title="Printer Stations" count={printers.length} onAdd={handleAdd} />
-      {printers.length === 0 ? (
-        <p className="text-sm py-8 text-center" style={{ color: COLORS.grayText }}>No printers configured.</p>
-      ) : (
-        printers.map((p) => (
-          <ListItem key={p.id} onEdit={() => handleEdit(p)} onDelete={() => {}} testId={`printer-${p.id}`}>
-            <div className="flex justify-between items-center mb-1">
-              <span className="text-sm font-medium" style={{ color: COLORS.darkText }}>{p.name}</span>
-              <BoolBadge value={p.isActive} trueLabel="Active" falseLabel="Inactive" />
-            </div>
-            <div className="text-xs" style={{ color: COLORS.grayText }}>
-              Type: {p.type} &middot; Paper: {p.paperSize}mm &middot; Categories: {p.categoryIds?.length || 0}
-            </div>
-          </ListItem>
-        ))
-      )}
-    </div>
-  );
+// CR-352: PrintersView routes to correct screen based on restaurant printer_agent setting.
+// printerType = 'agent'  → PrinterAgentConfigView (Printer Agent device)
+// printerType = 'direct' → LocalPrinterSetupView  (USB / WiFi / BT direct printer)
+// Note: profile API does not return printer_agent; localStorage is the source of truth
+// (written by RestaurantSettingsPage.jsx saveStep on every wizard save).
+import { PrinterAgentConfigView } from "./printerConfig/PrinterAgentConfigView";
+import { LocalPrinterSetupView }  from "./localPrinter/LocalPrinterSetupView";
+const PrintersViewGate = () => {
+  const isAgent = localStorage.getItem('mygenie_printer_type') === 'agent';
+  return isAgent ? <PrinterAgentConfigView /> : <LocalPrinterSetupView />;
 };
+export { PrintersViewGate as PrintersView };
 
 // ─── Cancellation Reasons ───────────────────────────────────────────────────
 export const CancellationReasonsView = () => {

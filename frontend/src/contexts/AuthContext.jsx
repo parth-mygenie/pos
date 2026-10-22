@@ -13,6 +13,10 @@ export const AuthProvider = ({ children }) => {
     catch { return []; }
   });
   const [isLoading, setIsLoading] = useState(false);
+  // BUG-598: assign_food_menu from login — source of truth for active menu type
+  const [assignFoodMenu, setAssignFoodMenu] = useState(
+    () => sessionStorage.getItem('assign_food_menu') || 'Normal'
+  );
 
   // Check if authenticated
   const isAuthenticated = useMemo(() => !!token, [token]);
@@ -24,19 +28,22 @@ export const AuthProvider = ({ children }) => {
       const authData = await authService.login(credentials, rememberMe);
       setToken(authData.token);
       setPermissions(authData.permissions || []);
+      setAssignFoodMenu(authData.assignFoodMenu || 'Normal'); // BUG-598
       return authData;
     } finally {
       setIsLoading(false);
     }
   }, []);
 
-  // Logout function
-  const logout = useCallback(() => {
-    authService.logout();
+  // Logout function — CR-124: async; awaits API call; throws on failure (caller handles toast)
+  const logout = useCallback(async () => {
+    await authService.logout(); // CR-124: awaits API + local storage clear
+    authService.clearCommonToken?.(); // CR-166: belt-and-suspenders clear of common token
     sessionStorage.clear();
     setToken(null);
     setUser(null);
     setPermissions([]);
+    setAssignFoodMenu('Normal'); // BUG-598
   }, []);
 
   // Set user data (called from LoadingPage after profile fetch)
@@ -71,6 +78,7 @@ export const AuthProvider = ({ children }) => {
     permissions,
     isAuthenticated,
     isLoading,
+    assignFoodMenu, // BUG-598
     
     // Actions
     login,
@@ -87,6 +95,7 @@ export const AuthProvider = ({ children }) => {
     permissions, 
     isAuthenticated, 
     isLoading, 
+    assignFoodMenu, // BUG-598
     login, 
     logout, 
     setUserData,

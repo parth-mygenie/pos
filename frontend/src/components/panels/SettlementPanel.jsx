@@ -45,6 +45,12 @@ const SettlementPanel = ({ isOpen, onClose, sidebarWidth }) => {
   const [settleModal, setSettleModal] = useState(null);
   const [openingModal, setOpeningModal] = useState(false);
   const [transferModal, setTransferModal] = useState(null);
+  // CR-095: Transfer modal state
+  const [selectedToWaiter, setSelectedToWaiter] = useState('');
+  const [transferAmount, setTransferAmount] = useState('');
+  const [transferType, setTransferType] = useState('full');
+  const [transferRemark, setTransferRemark] = useState('');
+  const [transferring, setTransferring] = useState(false);
   const [actualBalances, setActualBalances] = useState({});
   const [settleAmount, setSettleAmount] = useState(0);
   const [settleType, setSettleType] = useState("full");
@@ -101,7 +107,7 @@ const SettlementPanel = ({ isOpen, onClose, sidebarWidth }) => {
     setSaving(true);
     try {
       const w = settleModal;
-      const expected = w.totalFunds - w.settled;
+      const expected = w.balanceToSettle; // BUG-185: use backend balance_to_settle
       const actual = actualBalances[w.waiterId];
       const pilf = actual !== undefined ? Math.max(expected - actual, 0) : 0;
       await settlementService.settleWaiter(formatDateISO(date), w.waiterId, settleAmount, settleType, -pilf);
@@ -140,10 +146,55 @@ const SettlementPanel = ({ isOpen, onClose, sidebarWidth }) => {
     } finally { setSaving(false); }
   };
 
+  // CR-095: Transfer handlers
+  const resetTransferState = () => {
+    setSelectedToWaiter('');
+    setTransferAmount('');
+    setTransferType('full');
+    setTransferRemark('');
+  };
+
+  const handleTransfer = async () => {
+    if (!selectedToWaiter || transferring) return;
+    const amt = transferType === 'full'
+      ? Math.abs(parseFloat(transferModal.balanceToSettle) || 0)
+      : parseFloat(transferAmount) || 0;
+    if (amt <= 0) {
+      toast({ title: 'Enter a valid amount', variant: 'destructive' });
+      return;
+    }
+    if (amt > Math.abs(parseFloat(transferModal.balanceToSettle) || 0)) {
+      toast({ title: 'Amount exceeds available balance', variant: 'destructive' });
+      return;
+    }
+    setTransferring(true);
+    try {
+      const res = await settlementService.transferCollection({
+        from_waiter_id: transferModal.waiterId,
+        to_waiter_id: parseInt(selectedToWaiter),
+        date: formatDateISO(date),
+        transfer_type: transferType,
+        amount: amt,
+        remark: transferRemark || undefined,
+      });
+      toast({ title: res.data?.message || 'Transfer successful' });
+      setTransferModal(null);
+      resetTransferState();
+      fetchReport(date);
+    } catch (err) {
+      toast({ title: err.readableMessage || 'Transfer failed', variant: 'destructive' });
+    } finally {
+      setTransferring(false);
+    }
+  };
+
   const openSettleModal = (w) => {
     const actual = actualBalances[w.waiterId];
-    const expected = w.totalFunds - w.settled;
-    const prefill = actual !== undefined ? Math.min(Math.abs(Math.round(actual)), expected) : Math.min(Math.abs(Math.round(w.balanceToSettle)), expected);
+    const expected = w.balanceToSettle; // BUG-185: use backend balance_to_settle
+    // BUG-186: use absolute balanceToSettle when expected ≤ 0 (over-settlement / negative balance)
+    const absBalance = Math.abs(w.balanceToSettle || 0);
+    const effectiveExpected = expected > 0 ? expected : absBalance;
+    const prefill = actual !== undefined ? Math.abs(Math.round(actual)) : Math.round(effectiveExpected);
     setSettleAmount(Math.max(prefill, 0));
     setSettleType("full");
     setSettleModal(w);
@@ -247,7 +298,7 @@ const SettlementPanel = ({ isOpen, onClose, sidebarWidth }) => {
                 {activeWaiters.map((w) => {
                   const status = getStatus(w);
                   const bal = w.balanceToSettle;
-                  const expected = w.totalFunds - w.settled;
+                  const expected = w.balanceToSettle; // BUG-185: use backend balance_to_settle
                   const actual = actualBalances[w.waiterId];
                   const pilf = actual !== undefined ? (expected - actual) : w.pilferage;
                   const isExpanded = expandedRow === w.waiterId;
@@ -352,7 +403,7 @@ const SettlementPanel = ({ isOpen, onClose, sidebarWidth }) => {
                     <td className="px-3 py-2 text-right text-sm font-mono font-bold" style={{ color: COLORS.primaryGreen }}>{fmt(totals.cashCollected)}</td>
                     <td className="px-3 py-2 text-right text-sm font-mono font-bold" style={{ color: COLORS.darkText }}>{fmt(totals.totalFunds)}</td>
                     <td className="px-3 py-2 text-right text-sm font-mono font-bold" style={{ color: "#3B82F6" }}>{fmt(totals.settled)}</td>
-                    <td className="px-3 py-2 text-right text-sm font-mono font-bold" style={{ color: COLORS.darkText }}>{fmt((totals.totalFunds || 0) - (totals.settled || 0))}</td>
+                    <td className="px-3 py-2 text-right text-sm font-mono font-bold" style={{ color: COLORS.darkText }}>{fmt(totals.remaining || 0)}</td>
                     <td className="px-3 py-2"></td>
                     <td className="px-3 py-2 text-right text-sm font-mono font-bold" style={{ color: totals.pilferage > 0 ? "#EF4444" : COLORS.grayText }}>{fmt(totals.pilferage)}</td>
                     <td className="px-3 py-2"></td>
@@ -383,16 +434,14 @@ const SettlementPanel = ({ isOpen, onClose, sidebarWidth }) => {
                   <input type="number" value={settleAmount} onChange={e => setSettleAmount(Math.max(Number(e.target.value), 0))}
                     readOnly={settleType === "full"} min={0}
                     className={`w-full pl-7 pr-4 py-2.5 text-lg font-mono rounded-lg border outline-none focus:ring-2 focus:ring-orange-200 ${settleType === "full" ? "bg-gray-50 cursor-not-allowed" : ""}`}
-                    style={{ borderColor: settleAmount > (settleModal.totalFunds - settleModal.settled) ? "#EF4444" : COLORS.borderGray, color: COLORS.darkText }} data-testid="settle-amount-input" />
+                    style={{ borderColor: COLORS.borderGray, color: COLORS.darkText }} data-testid="settle-amount-input" />
                 </div>
-                {settleAmount > (settleModal.totalFunds - settleModal.settled) && (
-                  <p className="text-[11px] mt-1" style={{ color: "#EF4444" }}>Cannot settle more than expected balance ({fmt(settleModal.totalFunds - settleModal.settled)})</p>
-                )}
+                {/* BUG-186: removed over-expected error — negative balance is valid business case */}
               </div>
               <div>
                 <label className="text-xs font-medium uppercase tracking-wide" style={{ color: COLORS.grayText }}>Type</label>
                 <div className="flex gap-2 mt-1">
-                  <button onClick={() => { setSettleType("full"); const actual = actualBalances[settleModal.waiterId]; const exp = settleModal.totalFunds - settleModal.settled; const val = actual !== undefined ? Math.min(Math.abs(Math.round(actual)), exp) : Math.min(Math.abs(Math.round(settleModal.balanceToSettle)), exp); setSettleAmount(Math.max(val, 0)); }}
+                  <button onClick={() => { setSettleType("full"); const actual = actualBalances[settleModal.waiterId]; const exp = settleModal.balanceToSettle; const absB = Math.abs(settleModal.balanceToSettle || 0); const effExp = exp > 0 ? exp : absB; const val = actual !== undefined ? Math.abs(Math.round(actual)) : Math.round(effExp); setSettleAmount(Math.max(val, 0)); }}
                     className={`flex-1 py-2 text-sm font-medium rounded-lg ${settleType === "full" ? "text-white" : "border"}`}
                     style={settleType === "full" ? { background: COLORS.primaryOrange } : { borderColor: COLORS.borderGray, color: COLORS.grayText }} data-testid="settle-type-full">Full</button>
                   <button onClick={() => setSettleType("partial")}
@@ -401,13 +450,13 @@ const SettlementPanel = ({ isOpen, onClose, sidebarWidth }) => {
                 </div>
               </div>
               <div className="rounded-lg p-3" style={{ background: COLORS.sectionBg }}>
-                <div className="flex justify-between text-xs"><span style={{ color: COLORS.grayText }}>Expected</span><span className="font-mono font-medium" style={{ color: COLORS.darkText }}>{fmt(settleModal.totalFunds - settleModal.settled)}</span></div>
-                <div className="flex justify-between text-xs mt-1"><span style={{ color: COLORS.grayText }}>Pilferage</span><span className="font-mono" style={{ color: actualBalances[settleModal.waiterId] !== undefined && (settleModal.totalFunds - settleModal.settled) > actualBalances[settleModal.waiterId] ? "#EF4444" : COLORS.grayText }}>{actualBalances[settleModal.waiterId] !== undefined ? fmt(Math.max((settleModal.totalFunds - settleModal.settled) - actualBalances[settleModal.waiterId], 0)) : "₹0"}</span></div>
+                <div className="flex justify-between text-xs"><span style={{ color: COLORS.grayText }}>Expected</span><span className="font-mono font-medium" style={{ color: COLORS.darkText }}>{fmt(settleModal.balanceToSettle)}</span></div>
+                <div className="flex justify-between text-xs mt-1"><span style={{ color: COLORS.grayText }}>Pilferage</span><span className="font-mono" style={{ color: actualBalances[settleModal.waiterId] !== undefined && (settleModal.balanceToSettle) > actualBalances[settleModal.waiterId] ? "#EF4444" : COLORS.grayText }}>{actualBalances[settleModal.waiterId] !== undefined ? fmt(Math.max((settleModal.balanceToSettle) - actualBalances[settleModal.waiterId], 0)) : "₹0"}</span></div>
               </div>
             </div>
             <div className="px-6 py-4 border-t flex justify-end gap-2" style={{ borderColor: COLORS.borderGray }}>
               <button onClick={() => setSettleModal(null)} className="px-4 py-2 text-sm rounded-lg border" style={{ borderColor: COLORS.borderGray, color: COLORS.grayText }}>Cancel</button>
-              <button onClick={handleSettle} disabled={saving || settleAmount <= 0 || settleAmount > (settleModal.totalFunds - settleModal.settled)} className="px-6 py-2 text-sm font-medium rounded-lg text-white disabled:opacity-50" style={{ background: COLORS.primaryOrange }} data-testid="confirm-settle-btn">{saving ? "Settling..." : "Confirm"}</button>
+              <button onClick={handleSettle} disabled={saving || settleAmount <= 0} className="px-6 py-2 text-sm font-medium rounded-lg text-white disabled:opacity-50" style={{ background: COLORS.primaryOrange }} data-testid="confirm-settle-btn">{saving ? "Settling..." : "Confirm"}</button>
             </div>
           </div>
         </div>
@@ -451,7 +500,7 @@ const SettlementPanel = ({ isOpen, onClose, sidebarWidth }) => {
         </div>
       )}
 
-      {/* ── Transfer Modal (Backend-Blocked) ── */}
+      {/* ── Transfer Modal — CR-095 ── */}
       {transferModal && (
         <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40" data-testid="transfer-modal">
           <div className="bg-white rounded-2xl w-[440px] shadow-xl">
@@ -463,29 +512,80 @@ const SettlementPanel = ({ isOpen, onClose, sidebarWidth }) => {
                   <p className="text-xs" style={{ color: COLORS.grayText }}>From: {transferModal.name} · {fmt(transferModal.balanceToSettle)}</p>
                 </div>
               </div>
-              <button onClick={() => setTransferModal(null)} className="p-1 rounded-lg hover:bg-gray-100"><X className="w-4 h-4" style={{ color: COLORS.grayText }} /></button>
+              <button onClick={() => { setTransferModal(null); resetTransferState(); }} className="p-1 rounded-lg hover:bg-gray-100" data-testid="transfer-close-btn"><X className="w-4 h-4" style={{ color: COLORS.grayText }} /></button>
             </div>
             <div className="px-6 py-5 space-y-4">
-              <div className="flex items-start gap-2 p-3 rounded-lg" style={{ background: "#FEF3C7", border: "1px solid #FDE68A" }}>
-                <AlertTriangle className="w-4 h-4 flex-shrink-0 mt-0.5" style={{ color: "#D97706" }} />
-                <div className="text-xs" style={{ color: "#92400E" }}>
-                  <span className="font-semibold">Awaiting backend API.</span> Transfer endpoint not yet available.
-                </div>
-              </div>
+              {/* Transfer To */}
               <div>
                 <label className="text-xs font-medium uppercase tracking-wide" style={{ color: COLORS.grayText }}>Transfer To</label>
-                <select className="w-full mt-1 px-3 py-2.5 text-sm rounded-lg border outline-none opacity-60" style={{ borderColor: COLORS.borderGray }} disabled>
+                <select
+                  value={selectedToWaiter}
+                  onChange={e => setSelectedToWaiter(e.target.value)}
+                  className="w-full mt-1 px-3 py-2.5 text-sm rounded-lg border outline-none focus:ring-2 focus:ring-purple-200"
+                  style={{ borderColor: COLORS.borderGray, color: COLORS.darkText }}
+                  data-testid="transfer-to-select"
+                >
                   <option value="">Select waiter...</option>
+                  {(waiterList.length > 0 ? waiterList : waiters).filter(w => (w.id || w.waiterId) !== transferModal.waiterId).map(w => (
+                    <option key={w.id || w.waiterId} value={w.id || w.waiterId}>{w.name}</option>
+                  ))}
                 </select>
               </div>
+              {/* Transfer Type */}
+              <div>
+                <label className="text-xs font-medium uppercase tracking-wide" style={{ color: COLORS.grayText }}>Transfer Type</label>
+                <div className="flex gap-2 mt-1">
+                  <button type="button"
+                    onClick={() => { setTransferType('full'); setTransferAmount(String(Math.abs(parseFloat(transferModal.balanceToSettle) || 0))); }}
+                    className={`flex-1 px-3 py-2 text-sm font-medium rounded-lg border transition-all ${transferType === 'full' ? 'border-purple-500 bg-purple-50 text-purple-700' : 'border-gray-200 text-gray-500 hover:bg-gray-50'}`}
+                    data-testid="transfer-type-full"
+                  >Full</button>
+                  <button type="button"
+                    onClick={() => { setTransferType('partial'); setTransferAmount(''); }}
+                    className={`flex-1 px-3 py-2 text-sm font-medium rounded-lg border transition-all ${transferType === 'partial' ? 'border-purple-500 bg-purple-50 text-purple-700' : 'border-gray-200 text-gray-500 hover:bg-gray-50'}`}
+                    data-testid="transfer-type-partial"
+                  >Partial</button>
+                </div>
+              </div>
+              {/* Amount */}
               <div>
                 <label className="text-xs font-medium uppercase tracking-wide" style={{ color: COLORS.grayText }}>Amount</label>
-                <input type="number" placeholder="0" disabled className="w-full mt-1 px-3 py-2.5 text-lg font-mono rounded-lg border outline-none opacity-60" style={{ borderColor: COLORS.borderGray }} />
+                <div className="relative mt-1">
+                  <span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm" style={{ color: COLORS.grayText }}>₹</span>
+                  <input
+                    type="number" min={0}
+                    value={transferType === 'full' ? Math.abs(parseFloat(transferModal.balanceToSettle) || 0) : transferAmount}
+                    onChange={e => setTransferAmount(e.target.value)}
+                    readOnly={transferType === 'full'}
+                    className={`w-full pl-7 pr-4 py-2.5 text-lg font-mono rounded-lg border outline-none focus:ring-2 focus:ring-purple-200 ${transferType === 'full' ? 'bg-gray-50 cursor-not-allowed' : ''}`}
+                    style={{ borderColor: COLORS.borderGray, color: COLORS.darkText }}
+                    data-testid="transfer-amount-input"
+                  />
+                </div>
+              </div>
+              {/* Remark */}
+              <div>
+                <label className="text-xs font-medium uppercase tracking-wide" style={{ color: COLORS.grayText }}>Remark <span className="normal-case">(optional)</span></label>
+                <textarea
+                  value={transferRemark}
+                  onChange={e => setTransferRemark(e.target.value)}
+                  rows={2}
+                  placeholder="e.g. Waiter left mid shift"
+                  className="w-full mt-1 px-3 py-2 text-sm rounded-lg border outline-none focus:ring-2 focus:ring-purple-200 resize-none"
+                  style={{ borderColor: COLORS.borderGray, color: COLORS.darkText }}
+                  data-testid="transfer-remark-input"
+                />
               </div>
             </div>
             <div className="px-6 py-4 border-t flex justify-end gap-2" style={{ borderColor: COLORS.borderGray }}>
-              <button onClick={() => setTransferModal(null)} className="px-4 py-2 text-sm rounded-lg border" style={{ borderColor: COLORS.borderGray, color: COLORS.grayText }}>Cancel</button>
-              <button disabled className="px-6 py-2 text-sm font-medium rounded-lg text-white opacity-50 cursor-not-allowed" style={{ background: "#8B5CF6" }}>Transfer (API Pending)</button>
+              <button onClick={() => { setTransferModal(null); resetTransferState(); }} className="px-4 py-2 text-sm rounded-lg border" style={{ borderColor: COLORS.borderGray, color: COLORS.grayText }} data-testid="transfer-cancel-btn">Cancel</button>
+              <button
+                onClick={handleTransfer}
+                disabled={!selectedToWaiter || transferring}
+                className="px-6 py-2 text-sm font-medium rounded-lg text-white disabled:opacity-50 disabled:cursor-not-allowed hover:opacity-90"
+                style={{ background: "#8B5CF6" }}
+                data-testid="transfer-submit-btn"
+              >{transferring ? 'Transferring...' : 'Transfer'}</button>
             </div>
           </div>
         </div>

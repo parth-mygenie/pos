@@ -75,3 +75,15 @@ self.addEventListener('notificationclick', (event) => {
     })
   );
 });
+
+// BUG-597: skip the waiting phase so a new SW version activates immediately
+// on the next page open, instead of sitting idle until all tabs are closed.
+self.addEventListener('install', () => {
+  self.skipWaiting();
+});
+
+// BUG-597: claim all already-open tabs so the newly-activated SW controls
+// them right away, allowing the controllerchange event to fire in the app.
+self.addEventListener('activate', (event) => {
+  event.waitUntil(self.clients.claim());
+});

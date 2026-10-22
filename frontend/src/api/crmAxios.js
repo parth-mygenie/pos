@@ -5,6 +5,7 @@
 //          Env-based REACT_APP_CRM_API_KEYS mapping removed per owner directive.
 
 import axios from 'axios';
+import api from './axios'; // BUG-300 T2: POS api instance for silent crm_token refresh on 401
 
 const CRM_BASE_URL = process.env.REACT_APP_CRM_BASE_URL;
 
@@ -13,9 +14,10 @@ if (!CRM_BASE_URL) {
 }
 
 // BUG-098: Single CRM token from login response (replaces per-restaurant env map)
-// Restore from sessionStorage on page refresh (token lost from JS memory on reload)
-let currentCrmToken = sessionStorage.getItem('crm_token') || null;
+// BUG-300: Restore from localStorage on page refresh (sessionStorage cleared on tab close / hard refresh)
+let currentCrmToken = localStorage.getItem('crm_token') || null;
 let currentRestaurantId = null;
+let _crmTokenRefreshing = false; // BUG-300 T2: guard — prevents concurrent 401 refresh races
 
 /**
  * Set the CRM API token from the login response
@@ -79,7 +81,34 @@ crmApi.interceptors.request.use(
 // CRM-specific `data.detail` branch and terminal fallback.
 crmApi.interceptors.response.use(
   (response) => response,
-  (error) => {
+  async (error) => { // BUG-300 T2: async to support silent token refresh
+    // BUG-300 T2: Silent CRM token refresh on 401 — use dedicated POS endpoint
+    if (
+      error.response?.status === 401 &&
+      !error.config?._crmRetry &&
+      !_crmTokenRefreshing
+    ) {
+      _crmTokenRefreshing = true;
+      try {
+        const res = await api.get('/api/v2/vendoremployee/restaurant-crm-token');
+        if (res.data?.crm_token) {
+          const newToken = res.data.crm_token;
+          setCrmToken(newToken);
+          localStorage.setItem('crm_token', newToken);
+          // Retry the original failed CRM request once with the refreshed token
+          error.config._crmRetry = true;
+          error.config.headers['X-API-Key'] = newToken;
+          return crmApi.request(error.config);
+        }
+      } catch (_refreshErr) {
+        // POS session expired → api.get 401 → axios.js auto-logout
+        // OR endpoint unavailable — fall through to existing error handling
+      } finally {
+        _crmTokenRefreshing = false;
+      }
+    }
+
+    // Existing error shape extraction (unchanged) — CR-027 Phase 1 / §4.8 A1
     // Laravel default 422 object shape — errors: { field: ["msg"] }
     let validationLine = '';
     const errs = error.response?.data?.errors;

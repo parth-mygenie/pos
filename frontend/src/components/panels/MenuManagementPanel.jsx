@@ -1,15 +1,20 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
-import { X, Table2, LayoutGrid } from "lucide-react";
+import { X, Table2, LayoutGrid, Settings } from "lucide-react";
 import { COLORS } from "../../constants";
 import { useToast } from "../../hooks/use-toast";
+import { useRestaurant } from "../../contexts/RestaurantContext"; // CR-144
 import CategoryList from "./menu/CategoryList";
 import ProductList from "./menu/ProductList";
 import BulkEditor from "./menu/BulkEditor";
+import AddonManagementPanel from "./menu/AddonManagementPanel"; // CR-144
+import AddonStockTab        from "../settings/aggregatorSetup/AddonStockTab";     // CR-155
+import VariationStockTab    from "../settings/aggregatorSetup/VariationStockTab"; // CR-155
 import * as menuService from "../../api/services/menuManagementService";
 import { fromAPI } from "../../api/transforms/menuManagementTransform";
 
 const MenuManagementPanel = ({ isOpen, onClose, sidebarWidth }) => {
   const { toast } = useToast();
+  const { currencySymbol } = useRestaurant(); // CR-144
   const [selectedCategoryId, setSelectedCategoryId] = useState(null);
   const [menuType, setMenuType] = useState("Normal");
   const [menuTypes, setMenuTypes] = useState([{ id: 0, name: "Normal" }]);
@@ -20,6 +25,10 @@ const MenuManagementPanel = ({ isOpen, onClose, sidebarWidth }) => {
   const [deleteReasons, setDeleteReasons] = useState([]);
   const [loading, setLoading] = useState(false);
   const [bulkEditMode, setBulkEditMode] = useState(false);
+  const [addonPanelMode, setAddonPanelMode] = useState(false); // CR-144
+  const [stockMode, setStockMode] = useState(null); // CR-155: null=closed | 'addon-stock' | 'variation-stock'
+  const [clients, setClients] = useState([]); // CR-140
+  const [selectedClientId, setSelectedClientId] = useState(null); // CR-146: null=All, 0=Main Branch, N=client id
 
   // Fetch foods list
   const fetchFoods = useCallback(async () => {
@@ -36,6 +45,26 @@ const MenuManagementPanel = ({ isOpen, onClose, sidebarWidth }) => {
       setLoading(false);
     }
   }, [menuType, toast]);
+
+  // G1: Optimistic stock toggle handler — updates isActive + turnOnAt immediately from
+  // aggregatorStockToggle response items[0], then fetchFoods for full sync
+  const handleStockToggleDone = useCallback((updatedItem) => {
+    if (updatedItem?.id) {
+      setFoods(prev => prev.map(f =>
+        f.productId === updatedItem.id
+          ? { ...f, isActive: updatedItem.status === 1, turnOnAt: updatedItem.turn_on_at || null }
+          : f
+      ));
+    }
+    fetchFoods();
+  }, [fetchFoods]);
+
+  // CR-146: filter foods by selected client — frontend-only (API ignores client_id param)
+  // null=All, 0=Main Branch (clientId===0), N=specific brand (clientId===N)
+  const filteredFoods = useMemo(() => {
+    if (menuType !== 'Aggregator' || selectedClientId === null) return foods;
+    return foods.filter(f => f.clientId === selectedClientId);
+  }, [foods, menuType, selectedClientId]);
 
   // Fetch categories from dedicated API
   const fetchCategories = useCallback(async () => {
@@ -62,6 +91,16 @@ const MenuManagementPanel = ({ isOpen, onClose, sidebarWidth }) => {
       toast({ title: "Error", description: err.readableMessage, variant: "destructive" });
     }
   }, [toast]);
+
+  // CR-140 GAP-3: Fetch restaurant clients (sub-brands) when Aggregator tab selected
+  const fetchClients = useCallback(async () => {
+    try {
+      const res = await menuService.getRestaurantClients();
+      setClients(res.data?.clients || []);
+    } catch {
+      setClients([]);
+    }
+  }, []);
 
   // Fetch meta on mount (menu types, delete reasons, stations, categories, addons)
   useEffect(() => {
@@ -95,10 +134,29 @@ const MenuManagementPanel = ({ isOpen, onClose, sidebarWidth }) => {
     if (isOpen) fetchFoods();
   }, [isOpen, fetchFoods]);
 
+  // CR-140 B1: Fetch clients when Aggregator tab active (separate effect — do NOT modify above)
+  useEffect(() => {
+    if (!isOpen) return;
+    if (menuType === 'Aggregator') {
+      fetchClients();
+    } else {
+      setClients([]);
+    }
+  }, [isOpen, menuType, fetchClients]); // CR-140
+
+  // CR-146: reset client filter when menu type leaves Aggregator
+  // CR-155: reset stock mode when leaving Aggregator
+  useEffect(() => {
+    if (menuType !== 'Aggregator') {
+      setSelectedClientId(null);
+      setStockMode(null); // CR-155
+    }
+  }, [menuType]);
+
   // BUG-121-A: Derive item counts from foods array (categories API has no count field)
   const categoriesWithCounts = useMemo(() => {
     const countMap = {};
-    foods.forEach((f) => {
+    filteredFoods.forEach((f) => { // CR-146: count from filtered view
       const cid = f.categoryId;
       if (cid) countMap[cid] = (countMap[cid] || 0) + 1;
     });
@@ -106,7 +164,7 @@ const MenuManagementPanel = ({ isOpen, onClose, sidebarWidth }) => {
       ...c,
       itemCount: countMap[c.categoryId] || 0,
     }));
-  }, [categories, foods]);
+  }, [categories, filteredFoods]);
 
   const handleClose = () => {
     setSelectedCategoryId(null);
@@ -143,6 +201,22 @@ const MenuManagementPanel = ({ isOpen, onClose, sidebarWidth }) => {
               <option key={mt.id} value={mt.name}>{mt.name}</option>
             ))}
           </select>
+          {/* CR-146: Client/branch selector — only when Aggregator + has sub-brands */}
+          {menuType === 'Aggregator' && clients.length > 0 && (
+            <select
+              value={selectedClientId === null ? '' : String(selectedClientId)}
+              onChange={(e) => setSelectedClientId(e.target.value === '' ? null : Number(e.target.value))}
+              className="px-3 py-1.5 text-sm rounded-lg border outline-none bg-white"
+              style={{ borderColor: COLORS.borderGray, color: COLORS.darkText }}
+              data-testid="client-selector"
+            >
+              <option value="">All</option>
+              <option value="0">Main Branch</option>
+              {clients.map((c) => (
+                <option key={c.id} value={String(c.id)}>{c.name}</option>
+              ))}
+            </select>
+          )}
           {loading && !bulkEditMode && (
             <span className="text-xs" style={{ color: COLORS.grayText }} data-testid="menu-loading-inline">Loading...</span>
           )}
@@ -151,10 +225,45 @@ const MenuManagementPanel = ({ isOpen, onClose, sidebarWidth }) => {
               hidden to avoid double indication. */}
         </div>
         <div className="flex items-center gap-2">
+          {/* CR-144: Manage Add-ons button — always visible, no menuType guard */}
+          <button
+            data-testid="manage-addons-btn"
+            onClick={() => { setAddonPanelMode(v => !v); if (bulkEditMode) setBulkEditMode(false); }}
+            className="flex items-center gap-1.5 px-3 py-1.5 text-sm rounded-lg border transition-colors"
+            style={{
+              borderColor: addonPanelMode ? COLORS.primaryGreen : COLORS.borderGray,
+              color:       addonPanelMode ? COLORS.primaryGreen : COLORS.grayText,
+              backgroundColor: addonPanelMode ? '#F0FDF4' : 'transparent',
+            }}
+          >
+            <Settings className="w-4 h-4" />
+            Add-ons
+          </button>
+          {/* CR-155: Aggregator Stock — OOS/Available toggle for addons + variations on aggregator platform.
+              Only visible when Aggregator menu type is selected. */}
+          {menuType === 'Aggregator' && (
+            <button
+              data-testid="aggregator-stock-btn"
+              onClick={() => {
+                setStockMode(v => v ? null : 'addon-stock');
+                if (bulkEditMode)   setBulkEditMode(false);
+                if (addonPanelMode) setAddonPanelMode(false);
+              }}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-sm rounded-lg border transition-colors"
+              style={{
+                borderColor:     stockMode ? COLORS.primaryOrange : COLORS.borderGray,
+                color:           stockMode ? COLORS.primaryOrange : COLORS.grayText,
+                backgroundColor: stockMode ? '#FFF7ED' : 'transparent',
+              }}
+            >
+              <Settings className="w-4 h-4" />
+              Aggregator Stock
+            </button>
+          )}
           {/* Bulk Edit / Card View toggle */}
           <button
             data-testid="bulk-edit-toggle-btn"
-            onClick={() => setBulkEditMode(v => !v)}
+            onClick={() => { setBulkEditMode(v => !v); if (addonPanelMode) setAddonPanelMode(false); if (stockMode) setStockMode(null); }}
             className="flex items-center gap-1.5 px-3 py-1.5 text-sm rounded-lg border transition-colors"
             style={{
               borderColor: bulkEditMode ? COLORS.primaryOrange : COLORS.borderGray,
@@ -175,16 +284,62 @@ const MenuManagementPanel = ({ isOpen, onClose, sidebarWidth }) => {
         </div>
       </div>
 
-      {/* Content — Card View or Bulk Editor */}
-      {bulkEditMode ? (
+      {/* Content — Card View or Bulk Editor or Addon Master — CR-144 / Aggregator Stock — CR-155 */}
+      {stockMode ? (
+        <div className="flex-1 overflow-hidden flex flex-col">
+          <div className="flex border-b flex-shrink-0 px-6 pt-2" style={{ borderColor: COLORS.borderGray }}>
+            {[
+              { key: 'addon-stock',     label: 'Addon Stock' },
+              { key: 'variation-stock', label: 'Variation Stock' },
+            ].map(({ key, label }) => (
+              <button key={key}
+                onClick={() => setStockMode(key)}
+                className="px-4 py-2 text-sm font-medium border-b-2 transition-colors mr-1"
+                style={{
+                  borderBottomColor: stockMode === key ? COLORS.primaryOrange : 'transparent',
+                  color: stockMode === key ? COLORS.primaryOrange : COLORS.grayText,
+                }}
+                data-testid={`stock-tab-${key}`}>
+                {label}
+              </button>
+            ))}
+          </div>
+          <div className="flex-1 overflow-auto p-4">
+            {stockMode === 'addon-stock' && (
+              <AddonStockTab // CR-155
+                activeClientId={selectedClientId}
+                subBrands={clients}
+              />
+            )}
+            {stockMode === 'variation-stock' && (
+              <VariationStockTab // CR-155
+                activeClientId={selectedClientId}
+                subBrands={clients}
+              />
+            )}
+          </div>
+        </div>
+      ) : addonPanelMode ? (
+        <div className="flex-1 overflow-hidden">
+          <AddonManagementPanel
+            addons={addons}
+            currencySymbol={currencySymbol}
+            onRefresh={fetchAddons}
+            onClose={() => setAddonPanelMode(false)}
+          />
+        </div>
+      ) : bulkEditMode ? (
         <div className="flex-1 overflow-hidden">
           <BulkEditor
-            foods={foods}
+            foods={filteredFoods} // CR-146: filtered by client/branch
             categories={categoriesWithCounts}
             menuType={menuType}
+            clients={clients}
+            addons={addons}
             isLoading={loading}
             onRefresh={fetchFoods}
             onClose={() => setBulkEditMode(false)}
+            deleteReasons={deleteReasons} // CR-159: for bulk delete confirm dialog
           />
         </div>
       ) : (
@@ -206,14 +361,17 @@ const MenuManagementPanel = ({ isOpen, onClose, sidebarWidth }) => {
           {/* Right: Products (70%) */}
           <div className="w-[70%] p-4 overflow-hidden flex flex-col">
             <ProductList
-              foods={foods}
+              foods={filteredFoods} // CR-146: filtered by client/branch
               categories={categoriesWithCounts}
               addons={addons}
               selectedCategoryId={selectedCategoryId}
               deleteReasons={deleteReasons}
               menuType={menuType}
+              clients={clients}
               onRefresh={fetchFoods}
               onRefreshAddons={fetchAddons}
+              onStockToggleDone={handleStockToggleDone}
+              isLoading={loading}
             />
           </div>
         </div>

@@ -1,9 +1,12 @@
 import { useState, useEffect, useRef, useMemo } from "react";
 import { Utensils, XCircle, Pencil, CookingPot, UtensilsCrossed, Check, User, Phone, Trash2, ArrowLeftRight, RefreshCw, ChevronDown, ChevronUp, LayoutGrid, MapPin, FileText, Banknote, CreditCard, Smartphone, Clock } from "lucide-react";
 import { COLORS } from "../../constants";
-import { searchCustomers, lookupCustomer } from "../../api/services/customerService";
+import { searchCustomers, lookupCustomer, createCustomer } from "../../api/services/customerService"; // BUG-183
 import { RePrintOnlyButton, KotBillCheckboxes } from "./RePrintButton";
 import { useSettings } from "../../contexts/SettingsContext";
+import { useRestaurant } from "../../contexts"; // BUG-331
+import { applyGrandTotalRoundOff } from "../../utils/roundOffUtils"; // CR-170
+import RecordPaymentModal from "./RecordPaymentModal"; // CR-162
 
 // BUG-168: Compute addon display text with total qty (per-unit addon qty × item qty)
 const getAddonText = (item) => {
@@ -277,7 +280,7 @@ const NewItemRow = ({ item, cartIndex, onDeleteItem, updateQuantity, onAddNote, 
           <button onClick={() => {
             const step = (item.itemUnit === 'Kg' || item.itemUnit === 'L') ? 0.05 : 50;
             const minVal = step;
-            if (item.qty > minVal) updateQuantity(item.id, Math.round((item.qty - step) * 100) / 100);
+            if (item.qty > minVal) updateQuantity(item._cartKey || item.id, Math.round((item.qty - step) * 100) / 100); // BUG-374
           }} className="w-9 h-9 flex items-center justify-center rounded-lg hover:bg-gray-100 text-lg font-bold" style={{ color: COLORS.grayText }} data-testid={`weight-minus-${item.id}`}>−</button>
           <span className="font-bold text-xs text-center min-w-[3rem] px-0.5" style={{ color: COLORS.primaryGreen }}>
             {item.qty < 1 && (item.itemUnit === 'Kg' || item.itemUnit === 'L')
@@ -286,14 +289,14 @@ const NewItemRow = ({ item, cartIndex, onDeleteItem, updateQuantity, onAddNote, 
           </span>
           <button onClick={() => {
             const step = (item.itemUnit === 'Kg' || item.itemUnit === 'L') ? 0.05 : 50;
-            updateQuantity(item.id, Math.round((item.qty + step) * 100) / 100);
+            updateQuantity(item._cartKey || item.id, Math.round((item.qty + step) * 100) / 100); // BUG-374
           }} className="w-9 h-9 flex items-center justify-center rounded-lg hover:bg-gray-100 text-lg font-bold" style={{ color: COLORS.primaryGreen }} data-testid={`weight-plus-${item.id}`}>+</button>
         </>
       ) : (
         <>
-          <button onClick={() => { if (item.qty > 1) updateQuantity(item.id, item.qty - 1); }} className="w-9 h-9 flex items-center justify-center rounded-lg hover:bg-gray-100 text-lg font-bold" style={{ color: COLORS.grayText }} data-testid={`qty-minus-${item.id}`}>−</button>
-          <input type="number" value={item.qty} min={1} onChange={(e) => { const val = parseInt(e.target.value); if (!isNaN(val) && val >= 1) updateQuantity(item.id, val); }} className="font-bold w-8 text-center bg-transparent border-none outline-none [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none" style={{ color: COLORS.primaryGreen }} data-testid={`qty-input-${item.id}`} />
-          <button onClick={() => updateQuantity(item.id, item.qty + 1)} className="w-9 h-9 flex items-center justify-center rounded-lg hover:bg-gray-100 text-lg font-bold" style={{ color: COLORS.primaryGreen }} data-testid={`qty-plus-${item.id}`}>+</button>
+          <button onClick={() => { if (item.qty > 1) updateQuantity(item._cartKey || item.id, item.qty - 1); }} className="w-9 h-9 flex items-center justify-center rounded-lg hover:bg-gray-100 text-lg font-bold" style={{ color: COLORS.grayText }} data-testid={`qty-minus-${item.id}`}>−</button>{/* BUG-374 */}
+          <input type="number" value={item.qty} min={1} onChange={(e) => { const val = parseInt(e.target.value); if (!isNaN(val) && val >= 1) updateQuantity(item._cartKey || item.id, val); }} className="font-bold w-8 text-center bg-transparent border-none outline-none [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none" style={{ color: COLORS.primaryGreen }} data-testid={`qty-input-${item.id}`} />
+          <button onClick={() => updateQuantity(item._cartKey || item.id, item.qty + 1)} className="w-9 h-9 flex items-center justify-center rounded-lg hover:bg-gray-100 text-lg font-bold" style={{ color: COLORS.primaryGreen }} data-testid={`qty-plus-${item.id}`}>+</button>{/* BUG-374 */}
         </>
       )}
     </div>
@@ -381,12 +384,15 @@ const QsrBillingSection = ({
   );
 
   // Tax
+  // BUG-304: split discountable vs non-discountable GST/VAT (mirrors CPP E1)
   const taxTotals = useMemo(() => {
     let sgst = 0, cgst = 0, vat = 0;
+    let dSgst = 0, dCgst = 0, dVat = 0; // BUG-304: discountable-only buckets
     billableItems.forEach(item => {
       const tax = item.tax;
       if (!tax || tax.percentage === 0) return;
       const linePrice = getItemLinePrice(item);
+      const isDiscountable = item.giveDiscount !== false; // BUG-304
       let taxAmt;
       if (tax.isInclusive) {
         taxAmt = linePrice - (linePrice / (1 + tax.percentage / 100));
@@ -394,13 +400,17 @@ const QsrBillingSection = ({
         taxAmt = linePrice * (tax.percentage / 100);
       }
       if ((tax.type || 'GST').toUpperCase() === 'GST') {
-        sgst += taxAmt / 2;
-        cgst += taxAmt / 2;
+        sgst += taxAmt / 2; cgst += taxAmt / 2;
+        if (isDiscountable) { dSgst += taxAmt / 2; dCgst += taxAmt / 2; } // BUG-304
       } else if ((tax.type || '').toUpperCase() === 'VAT') {
         vat += taxAmt;
+        if (isDiscountable) { dVat += taxAmt; } // BUG-304
       }
     });
-    return { sgst: Math.round(sgst * 100) / 100, cgst: Math.round(cgst * 100) / 100, vat: Math.round(vat * 100) / 100 };
+    return {
+      sgst: Math.round(sgst * 100) / 100, cgst: Math.round(cgst * 100) / 100, vat: Math.round(vat * 100) / 100,
+      dSgst: Math.round(dSgst * 100) / 100, dCgst: Math.round(dCgst * 100) / 100, dVat: Math.round(dVat * 100) / 100, // BUG-304
+    };
   }, [billableItems]);
 
   // Discount
@@ -422,24 +432,35 @@ const QsrBillingSection = ({
   const serviceCharge = scApplicable ? Math.round(subtotalAfterDiscount * scPct / 100 * 100) / 100 : 0;
 
   // GST on components
-  const discountRatio = itemTotal > 0 ? totalDiscount / itemTotal : 0;
-  const itemGstPostDiscount = (taxTotals.sgst + taxTotals.cgst) * (1 - discountRatio);
+  // BUG-304: use discountableTotal as denominator; only discount-eligible items' GST/VAT reduced
+  const discountableRatio = discountableTotal > 0 ? totalDiscount / discountableTotal : 0;
+  const itemGstPostDiscount =
+    (taxTotals.dSgst + taxTotals.dCgst) * (1 - discountableRatio)
+    + (taxTotals.sgst - taxTotals.dSgst) + (taxTotals.cgst - taxTotals.dCgst); // BUG-304
   const scGst = serviceCharge * scTaxRate;
   const tipGst = tip * scTaxRate;
   const deliveryGst = deliveryCharge * delTaxRate;
   const totalGst = itemGstPostDiscount + scGst + tipGst + deliveryGst;
   const sgst = Math.round((totalGst / 2) * 100) / 100;
   const cgst = Math.round((totalGst / 2) * 100) / 100;
-  const vatAmount = taxTotals.vat * (1 - discountRatio);
+  const vatAmount = taxTotals.dVat * (1 - discountableRatio)
+                  + (taxTotals.vat - taxTotals.dVat); // BUG-304
 
   const subtotal = Math.round((subtotalAfterDiscount + serviceCharge + tip + deliveryCharge) * 100) / 100;
   const rawFinalTotal = Math.round((subtotal + sgst + cgst + vatAmount) * 100) / 100;
-  const finalTotal = rawFinalTotal > 0
-    ? (roundOffEnabled ? Math.ceil(rawFinalTotal) : Math.round(rawFinalTotal * 100) / 100)
-    : 0;
+  // CR-170: conditional round-off via shared helper (< 10 paise → floor, ≥ 10 paise → ceil)
+  const finalTotal = applyGrandTotalRoundOff(rawFinalTotal, roundOffEnabled);
   const roundOff = Math.round((finalTotal - rawFinalTotal) * 100) / 100;
 
-  const roomBalance = isRoom && roomInfo ? Math.max(0, roomInfo.balancePayment || 0) : 0;
+  // CR-162: override takes priority (optimistic after payment), then ledger, then static snapshot
+  // roomSummaryOverride lives in CartPanel; QsrBillingSection uses null (no override at this level)
+  const roomBalance = isRoom && roomInfo
+    ? Math.max(0,
+        (roomInfo.roomPaymentSummary?.remainingRoomBalance
+        ?? roomInfo.balancePayment
+        ?? 0)
+        - (roomInfo.discountAmount || 0)) // BUG-527: subtract check-in discount; removes dead `null ??`
+    : 0;
   const associatedTotal = associatedOrders.reduce((sum, o) => sum + (o.amount || 0), 0);
   // POS3.1 BUG-111 (2026-05-27): on placed orders, prefer the server-authoritative
   // `total` prop (= orderFinancials.amount + deltas, computed at OrderEntry.jsx:788-792)
@@ -499,6 +520,7 @@ const QsrBillingSection = ({
         loyaltyPointsRedeemed: 0,
         loyaltyRedemptionId: null,
         walletBalance: 0,
+        discountFor: null,           // CR-137 pass-through: QSR quick-bill has no reason UI
       },
       customer: null,
       itemTotal,
@@ -523,7 +545,7 @@ const QsrBillingSection = ({
       <div className="px-4 py-2 space-y-1.5 text-xs">
         {/* Discount — editable if QSR Discount toggle ON */}
         {qsrDiscountEnabled && (
-          <div className="flex items-center justify-between gap-2 pb-1.5" style={{ borderBottom: `1px solid ${COLORS.borderGray}` }}>
+          <div className="flex items-center justify-between gap-2 pb-1.5 overflow-hidden" style={{ borderBottom: `1px solid ${COLORS.borderGray}` }}> {/* BUG-188: overflow-hidden */}
             <span style={{ color: COLORS.darkText }} className="font-medium">Discount</span>
             <div className="flex gap-1.5 items-center">
               <select
@@ -563,7 +585,7 @@ const QsrBillingSection = ({
                   data-testid="qsr-discount-value-input"
                 />
               )}
-              {totalDiscount > 0 && <span className="font-medium" style={{ color: COLORS.primaryGreen }}>-₹{totalDiscount.toFixed(2)}</span>}
+              {totalDiscount > 0 && <span className="font-medium flex-shrink-0 whitespace-nowrap" style={{ color: COLORS.primaryGreen }}>-₹{totalDiscount.toFixed(2)}</span>}
             </div>
           </div>
         )}
@@ -787,8 +809,10 @@ const CartPanel = ({
   setIsScheduled,
   scheduleAt = null,
   setScheduleAt,
+  onSplitItems = null, // CR-163: room order split trigger — null for non-room orders
 }) => {
   const { enableDynamicTables } = useSettings();
+  const { features } = useRestaurant(); // BUG-331
   // ROOM_CHECKIN_FIX_V2: synthetic "Check In" marker must never be counted,
   // rendered, or gate any cart-screen action (see ROOM_CHECKIN_UPDATE_ORDER_FIX_V2.md).
   const visibleCartItems = cartItems.filter(i => !i.isCheckInMarker);
@@ -802,12 +826,28 @@ const CartPanel = ({
   const isMarkerOnlyRoom = isRoom && hasCheckInMarker && visibleCartItems.length === 0;
 
   // Validation: required fields per order type
-  const isNameRequired = orderType === 'takeAway' || orderType === 'delivery';
-  const isPhoneRequired = orderType === 'delivery';
+  // BUG-195: read CR-051 localStorage toggles instead of hardcoding
+  const isNameRequired = (() => {
+    if (orderType === 'delivery') return true;
+    if (orderType === 'takeAway') return localStorage.getItem('mygenie_takeaway_name_required') !== 'false';
+    if (orderType === 'walkIn') return localStorage.getItem('mygenie_walkin_name_required') === 'true';
+    if (orderType === 'dineIn') return localStorage.getItem('mygenie_dinein_name_required') === 'true';
+    return false;
+  })();
+  const isPhoneRequired = (() => {
+    if (orderType === 'delivery') return true;
+    if (orderType === 'takeAway') return localStorage.getItem('mygenie_takeaway_phone_required') === 'true';
+    if (orderType === 'walkIn') return localStorage.getItem('mygenie_walkin_phone_required') === 'true';
+    if (orderType === 'dineIn') return localStorage.getItem('mygenie_dinein_phone_required') === 'true';
+    return false;
+  })();
   const isAddressRequired = orderType === 'delivery';
 
+  const { restaurant: restaurantCtx } = useRestaurant(); // BUG-183: restaurantId needed for createCustomer
   const [customerName, setCustomerName] = useState(customer?.name || "");
   const [customerPhone, setCustomerPhone] = useState(customer?.phone || "");
+  const [recordPaymentOpen, setRecordPaymentOpen] = useState(false);    // CR-162
+  const [roomSummaryOverride, setRoomSummaryOverride] = useState(null); // CR-162: optimistic balance after payment
   const [showPhoneSuggestions, setShowPhoneSuggestions] = useState(false);
   const [showNameSuggestions, setShowNameSuggestions] = useState(false);
   const [filteredCustomers, setFilteredCustomers] = useState([]);
@@ -960,18 +1000,28 @@ const CartPanel = ({
       if (phone10.length === 10 && !merged.id) {
         lookupCustomer(phone10)
           .then((enriched) => {
-            if (!enriched?.id) return;
-            onCustomerChange?.({
-              ...merged,
-              id:            enriched.id,
-              name:          enriched.name || merged.name,
-              phone:         enriched.phone || merged.phone,
-              tier:          enriched.tier,
-              totalPoints:   enriched.totalPoints,
-              pointsValue:   enriched.pointsValue,
-              walletBalance: enriched.walletBalance,
-              loyalty:       enriched.loyalty,
-            });
+            if (enriched?.id) {
+              // Existing CRM customer — enrich with loyalty/wallet data
+              onCustomerChange?.({
+                ...merged,
+                id:            enriched.id,
+                name:          enriched.name || merged.name,
+                phone:         enriched.phone || merged.phone,
+                tier:          enriched.tier,
+                totalPoints:   enriched.totalPoints,
+                pointsValue:   enriched.pointsValue,
+                walletBalance: enriched.walletBalance,
+                loyalty:       enriched.loyalty,
+              });
+            } else if (merged.name?.trim()) {
+              // BUG-183 Layer 3: new customer — auto-create CRM profile silently
+              createCustomer({ name: merged.name.trim(), phone: phone10 }, restaurantCtx?.id)
+                .then((created) => {
+                  if (!created?.id) return;
+                  onCustomerChange?.({ ...merged, id: created.id });
+                })
+                .catch(() => {}); // silent — order never blocked
+            }
           })
           .catch(() => {
             // Silent: CRM lookup failure is non-blocking
@@ -1169,10 +1219,25 @@ const CartPanel = ({
       )}
 
       {/* Column Headers */}
+      {/* CR-163: Move Items trigger — visible only for room orders with placed items */}
       <div className="px-4 py-2 flex items-center text-xs font-medium" style={{ backgroundColor: COLORS.sectionBg, color: COLORS.grayText }}>
         <span className="flex-1">Items</span>
         <span className="w-16 text-center" style={{ borderLeft: `1px solid ${COLORS.borderGray}` }}>Qty</span>
         <span className="w-20 text-right" style={{ borderLeft: `1px solid ${COLORS.borderGray}` }}>Price</span>
+        {isRoom && hasPlacedItems && onSplitItems && (
+          <button
+            onClick={onSplitItems}
+            className="ml-3 flex items-center gap-1.5 px-3 py-1 rounded-full border text-xs font-semibold transition-colors hover:bg-white"
+            style={{ borderColor: COLORS.borderGray, color: COLORS.darkText, backgroundColor: '#f9fafb' }}
+            data-testid="move-items-trigger"
+          >
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke={COLORS.primaryGreen} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M8 3H5a2 2 0 0 0-2 2v3M21 8V5a2 2 0 0 0-2-2h-3M21 16v3a2 2 0 0 0-2 2h-3M8 21H5a2 2 0 0 0-2-2v-3"/>
+              <path d="m7 11 5-5 5 5M7 13l5 5 5-5"/>
+            </svg>
+            Move Items
+          </button>
+        )}
       </div>
 
       {/* Cart Items */}
@@ -1251,7 +1316,7 @@ const CartPanel = ({
 
         {/* CR-018: Schedule Order checkbox + date/time picker.
             Visible: unplaced items exist + not QSR + not dineIn (with table) + not room. */}
-        {!qsrMode && cartItems.some(i => !i.placed) && orderType !== 'dineIn' && !isRoom && (
+        {!qsrMode && features?.scheduleOrderEnabled !== false && cartItems.some(i => !i.placed) && orderType !== 'dineIn' && !isRoom && (
           <div className="px-4 py-3" style={{ borderTop: `1px solid ${COLORS.borderGray}` }}>
             <label className="flex items-center gap-2 cursor-pointer" data-testid="schedule-order-checkbox">
               <input
@@ -1404,19 +1469,48 @@ const CartPanel = ({
       {isRoom && roomInfo && (
         <div
           style={{ borderTop: `1px solid ${COLORS.borderGray}` }}
-          className="px-4 py-2.5 flex items-center justify-between"
+          className="px-4 py-2.5"
           data-testid="cart-room-section"
         >
-          <div className="flex items-center gap-2">
-            <FileText className="w-4 h-4" style={{ color: COLORS.primaryOrange }} />
-            <span className="text-xs font-semibold" style={{ color: COLORS.darkText }}>
-              Room
-            </span>
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <FileText className="w-4 h-4" style={{ color: COLORS.primaryOrange }} />
+              <span className="text-xs font-semibold" style={{ color: COLORS.darkText }}>Room</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="text-xs font-bold" style={{ color: COLORS.primaryOrange }} data-testid="cart-room-balance">
+                ₹{Math.max(0, (roomSummaryOverride?.remainingRoomBalance ?? roomInfo.roomPaymentSummary?.remainingRoomBalance ?? roomInfo.balancePayment ?? 0) - (roomSummaryOverride ? 0 : (roomInfo.discountAmount || 0))).toLocaleString() /* BUG-527 */}
+              </span>
+              {/* CR-357: mid-stay partial payment trigger — TEMPORARILY DISABLED
+                  Payment attribution (room vs food) unresolved pending backend reply
+                  to Q-357-01 in BACKEND_BRIEF_CR357_MID_STAY_PAYMENT_2026_09_14.md.
+                  Re-enable once backend confirms contract and FE formula is updated. */}
+            </div>
           </div>
-          <span className="text-xs font-bold" style={{ color: COLORS.primaryOrange }} data-testid="cart-room-balance">
-            ₹{(roomInfo.balancePayment || 0).toLocaleString()}
-          </span>
         </div>
+      )}
+
+      {/* CR-162: Mid-stay payment modal */}
+      {recordPaymentOpen && orderId && roomInfo && (
+        <RecordPaymentModal
+          roomOrderId={orderId}
+          liveBalance={
+            roomSummaryOverride?.remainingRoomBalance
+            ?? roomInfo.roomPaymentSummary?.remainingRoomBalance
+            ?? roomInfo.balancePayment
+            ?? 0
+          }
+          priorPayments={
+            (roomSummaryOverride ?? roomInfo.roomPaymentSummary)?.payments || []
+          }
+          onClose={() => setRecordPaymentOpen(false)}
+          onSuccess={(updatedSummary) => {
+            // CR-162 B1 fix: optimistic update — patch local balance immediately
+            // without waiting for socket update-order to refresh OrderContext
+            if (updatedSummary) setRoomSummaryOverride(updatedSummary);
+            setRecordPaymentOpen(false);
+          }}
+        />
       )}
 
       {/* Order Notes Banner */}
@@ -1512,7 +1606,7 @@ const CartPanel = ({
         >
           {/* BUG-097 (2026-05-21): delivery orders now use "Collect Bill" (was "Delivered") */}
           <span>{isRoom ? 'Checkout' : 'Collect Bill'}</span>
-          <span>₹{(total + (isRoom ? associatedTotal + Math.max(0, roomInfo?.balancePayment || 0) : 0)).toLocaleString()}</span>
+          <span>₹{(total + (isRoom ? associatedTotal + Math.max(0, (roomSummaryOverride?.remainingRoomBalance ?? roomInfo?.roomPaymentSummary?.remainingRoomBalance ?? roomInfo?.balancePayment ?? 0) - (roomSummaryOverride ? 0 : (roomInfo?.discountAmount || 0))) : 0)).toLocaleString() /* BUG-527 */}</span>
         </button>
         )}
       </div>

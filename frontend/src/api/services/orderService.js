@@ -156,6 +156,7 @@ export const printOrder = async (orderId, printType, stationKot = null, orderDat
       custPhone: orderData?.phone || '',
       orderNote: orderData?.orderNote || '',
       billFoodList: orderData?.rawOrderDetails || [],
+      daily_token: orderData?.dailyToken || '', // BUG-144: token number for KOT print
     };
     // KOT: send actual station value; Bill without order data: send empty string
     payload.station_kot = (printType === 'kot' && stationKot) ? stationKot : '';
@@ -184,5 +185,20 @@ export const printOrder = async (orderId, printType, stationKot = null, orderDat
   console.log('[PrintOrder] payload:', payload, 'printer_agent.length:', agents.length);
   const response = await api.post(API_ENDPOINTS.PRINT_ORDER, payload);
   console.log('[PrintOrder] response:', response.data);
+  return response.data;
+};
+
+/**
+ * BUG-538: Persist role-base discount on an existing placed order before payment collection.
+ * Apply: discountAmount > 0. Unapply: discountAmount = 0.
+ * API uses 'fixed' for flat ₹; CPP uses 'flat' — mapped here on send.
+ */
+export const applyOrderDiscount = async ({ orderId, discountAmount, discountType, discountNote = '' }) => {
+  const response = await api.post('/api/v1/vendoremployee/order-discount-manage', {
+    order_id:        orderId,
+    discount_amount: discountAmount,
+    discount_type:   discountType === 'flat' ? 'fixed' : discountType,
+    discount_note:   discountNote,
+  });
   return response.data;
 };

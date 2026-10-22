@@ -1,8 +1,0 @@
-{
-  "errors": [
-    {
-      "code": "not_found",
-      "message": "Category not found for this restaurant."
-    }
-  ]
-}

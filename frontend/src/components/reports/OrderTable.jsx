@@ -140,7 +140,7 @@ const getColumns = (tabId, filters = {}, orders = []) => {
     { id: 'tableNo', label: 'Table No', sortable: true, width: 'w-24' },
     { id: 'punchedBy', label: 'Punched By', sortable: true, width: 'w-28' },
     { id: 'actionedBy', label: 'Actioned By', sortable: false, width: 'w-36' },
-    { id: 'amount', label: 'Amount', sortable: true, width: 'w-24', align: 'right' },
+    { id: 'amount', label: 'Amount', sortable: true, width: 'w-32', align: 'right' }, // BUG-352
   ];
 
   // Columns WITH Payment (for All Orders, Paid, Running tabs)
@@ -154,7 +154,7 @@ const getColumns = (tabId, filters = {}, orders = []) => {
     { id: 'actionedBy', label: 'Actioned By', sortable: false, width: 'w-36' },
     { id: 'paymentMethod', label: 'Payment', sortable: true, width: 'w-24' },
     ...pgColumnsWhenActive,
-    { id: 'amount', label: 'Amount', sortable: true, width: 'w-24', align: 'right' },
+    { id: 'amount', label: 'Amount', sortable: true, width: 'w-32', align: 'right' }, // BUG-352
   ];
 
   // All Orders tab: includes Payment column
@@ -344,7 +344,8 @@ const renderActionsCell = (order, tabId, actionsConfig) => {
     const pendingChangeMethod = !!actionsConfig.pendingChangeMethodIds?.has?.(order.id);
     return (
       <div className="flex items-center justify-end gap-1.5">
-        {canChangeMethod && (
+        {/* BUG-348: suppress Change Method for Razorpay PG orders */}
+        {canChangeMethod && !order.razorpayOrderId && (
           <PaymentMethodPicker
             order={order}
             currentMethod={currentMethod}
@@ -354,7 +355,8 @@ const renderActionsCell = (order, tabId, actionsConfig) => {
             onConfirm={(newMethod) => onChangeMethod?.(order, newMethod)}
           />
         )}
-        {canMarkUnpaid && (
+        {/* BUG-348: suppress Mark Unpaid for Razorpay PG orders */}
+        {canMarkUnpaid && !order.razorpayOrderId && (
           <button
             type="button"
             onClick={(e) => {
@@ -396,6 +398,19 @@ const renderActionsCell = (order, tabId, actionsConfig) => {
           <Printer className="w-3.5 h-3.5" />
           <span>Print</span>
         </button>
+        {/* BUG-348 / CR-165: Refund button — Razorpay PG paid orders only */}
+        {actionsConfig.onRefund && order.razorpayOrderId && (
+          <button
+            type="button"
+            onClick={(e) => { stop(e); actionsConfig.onRefund(order); }}
+            title="Initiate Razorpay refund"
+            data-testid={`row-action-refund-${order.id}`}
+            className="inline-flex items-center gap-1 px-2 py-1 text-xs font-medium rounded-sm border transition-colors border-red-300 text-red-700 hover:bg-red-50 cursor-pointer"
+          >
+            <RotateCcw className="w-3.5 h-3.5" />
+            <span>Refund</span>
+          </button>
+        )}
       </div>
     );
   }
@@ -550,6 +565,20 @@ const renderCell = (order, columnId, tabId) => {
       const pmLower = (order.paymentMethod || '').toLowerCase();
       if (pmLower === 'cash_on_delivery') {
         return <span className="text-sm text-zinc-400">—</span>;
+      }
+
+      // BUG-272: Stacked badges for partial payment
+      if (pmLower === 'partial') {
+        const legs = [];
+        if (order.cashAmount > 0) legs.push({ mode: 'Cash', amt: order.cashAmount, cls: 'bg-emerald-50 text-emerald-700 border-emerald-200' });
+        if (order.cardAmount > 0) legs.push({ mode: 'Card', amt: order.cardAmount, cls: 'bg-blue-50 text-blue-700 border-blue-200' });
+        if (order.upiAmount > 0) legs.push({ mode: 'UPI', amt: order.upiAmount, cls: 'bg-violet-50 text-violet-700 border-violet-200' });
+        if (legs.length) {
+          return <span className="flex flex-wrap gap-0.5">{legs.map((l, i) =>
+            <span key={i} className={`inline-block text-[10px] font-medium px-1.5 py-0.5 rounded border ${l.cls}`}>{l.mode} ₹{l.amt.toLocaleString()}</span>
+          )}</span>;
+        }
+        return <span className="inline-flex px-2 py-0.5 text-xs font-medium rounded-sm border bg-zinc-100 text-zinc-800 border-zinc-200">Partial</span>;
       }
 
       // For All Orders tab, only show cash/card/upi, rest should be blank

@@ -6,6 +6,7 @@ import useReportFetch from '../../components/reports/useReportFetch';
 import ReportLoadingShield from '../../components/reports/ReportLoadingShield';
 import { useRestaurant } from '../../contexts';
 import { useInsightsCache } from '../../contexts/InsightsCacheContext';
+import { exportReportAsExcel, exportReportAsPDF, openReportWindow } from '../../utils/reportExporter'; // BUG-485
 import { 
   ArrowLeft, 
   Calendar as CalendarIcon, 
@@ -57,7 +58,10 @@ const DashboardMockup = () => {
   const [appliedFrom, setAppliedFrom] = useState(sharedFrom);
   const [appliedTo, setAppliedTo] = useState(sharedTo);
 
-  const [isSidebarExpanded, setIsSidebarExpanded] = useState(false);
+  // BUG-361: persist sidebar state across reloads
+  const [isSidebarExpanded, setIsSidebarExpanded] = useState(
+    () => localStorage.getItem('mygenie_sidebar_expanded') === 'true'
+  );
   const [isSilentMode, setIsSilentMode] = useState(false);
   const [activePreset, setActivePreset] = useState('Today');
 
@@ -66,13 +70,13 @@ const DashboardMockup = () => {
   const draftDirty = fromDate !== appliedFrom || toDate !== appliedTo;
   const draftValid = fromDate && toDate && fromDate <= toDate;
 
-  // Max date range: 2 months (~62 days)
-  const MAX_RANGE_DAYS = 62;
+  // Max date range: 2 years (730 days) — BUG-353: lifted from 365 — backend-agg endpoint has no cap
+  const MAX_RANGE_DAYS = 730;
   const getDaysDiff = (f, t) => Math.round((new Date(t) - new Date(f)) / (1000 * 60 * 60 * 24));
   const draftRangeExceeded = draftValid && getDaysDiff(fromDate, toDate) > MAX_RANGE_DAYS;
   const canApply = draftDirty && draftValid && !draftRangeExceeded;
 
-  // Restrict date inputs: max "to" date = fromDate + 2 months, min "from" = toDate - 2 months
+  // Restrict date inputs: max "to" date = fromDate + 1 year, min "from" = toDate - 1 year
   const maxToDate = fromDate ? new Date(new Date(fromDate).getTime() + MAX_RANGE_DAYS * 86400000).toISOString().slice(0, 10) : '';
   const minFromDate = toDate ? new Date(new Date(toDate).getTime() - MAX_RANGE_DAYS * 86400000).toISOString().slice(0, 10) : '';
 
@@ -81,7 +85,7 @@ const DashboardMockup = () => {
     // CR-049: Fetch from backend insights-dashboard endpoint (replaces FE aggregation)
     async () => {
       const raw = await fetchInsightsDashboard(appliedFrom, appliedTo);
-      return transformDashboardResponse(raw);
+      return transformDashboardResponse(raw.data || raw); // BUG-547
     },
     [appliedFrom, appliedTo],
     { enabled: datesValid }
@@ -113,10 +117,10 @@ const DashboardMockup = () => {
         f = fmtDate(d); t = fmtDate(now);
         break;
       }
-      case '30D': {
-        const d = new Date(now);
-        d.setDate(d.getDate() - 29);
-        f = fmtDate(d); t = fmtDate(now);
+      case 'LM': {
+        const d1 = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+        const d2 = new Date(now.getFullYear(), now.getMonth(), 0);
+        f = fmtDate(d1); t = fmtDate(d2); // CR-422
         break;
       }
       case 'MTD': {
@@ -166,12 +170,103 @@ const DashboardMockup = () => {
     [payments.mix]
   );
 
+  // BUG-485: build export payload for PDF/Excel (mirrors SalesMockup pattern)
+  const buildExportPayload = () => {
+    if (!tiles) return null;
+    return {
+      title: 'Dashboard Report',
+      subtitle: 'Insights summary',
+      restaurant: { name: restaurant?.name || '', address: restaurant?.address || '', id: restaurant?.id || '' },
+      dateRange: { from: appliedFrom, to: appliedTo },
+      generatedBy: restaurant?.ownerName || '',
+      kpis: [
+        { label: 'Net Sales',          value: sales.totalRevenue,          tone: 'good',    format: 'inr' },
+        { label: 'Paid Orders',         value: sales.paidOrderCount,        tone: 'primary', format: 'text' },
+        { label: 'Top Channel',         value: `${channels.topChannel} (${channels.topChannelPct}%)`, tone: 'primary', format: 'text' },
+        { label: 'Repeat Customers',    value: `${customers.repeatPct}%`,   tone: 'primary', format: 'text' },
+        { label: 'Direct Discount',     value: discounts.directDiscount,    tone: 'bad',     format: 'inr' },
+        { label: 'Coupon Discount',     value: discounts.couponDiscount,    tone: 'bad',     format: 'inr' },
+        { label: 'Loyalty Discount',    value: discounts.loyaltyDiscount,   tone: 'bad',     format: 'inr' },
+        { label: 'Comp Items Total',    value: discounts.compItemTotal,     tone: 'bad',     format: 'inr' },
+        { label: 'Total Leakage',       value: discounts.totalLeakage,      tone: 'bad',     format: 'inr' },
+        { label: 'Credit Outstanding',  value: payments.creditOutstanding,  tone: 'bad',     format: 'inr' },
+        { label: 'Avg Prep Time',       value: kitchen.avgPrep,             tone: 'primary', format: 'text' },
+        { label: 'Avg Serve Time',      value: kitchen.avgServe,            tone: 'primary', format: 'text' },
+        { label: 'Audit Flags',         value: audits.total,                tone: audits.total > 0 ? 'bad' : 'primary', format: 'text' },
+      ],
+      sheets: [
+        {
+          name: 'By Channel',
+          subtitle: `${channels.mix.length} channels`,
+          columns: [
+            { key: 'name',    label: 'Channel',  format: 'text',    align: 'left',  width: 150 },
+            { key: 'count',   label: 'Orders',   format: 'integer', align: 'right', width: 80 },
+            { key: 'revenue', label: 'Revenue',  format: 'inr',     align: 'right', width: 120 },
+            { key: 'value',   label: 'Share %',  format: 'text',    align: 'right', width: 80 },
+          ],
+          rows: channels.mix,
+          totals: null,
+        },
+        {
+          name: 'By Payment',
+          subtitle: `${payments.mix.length} methods`,
+          columns: [
+            { key: 'name',    label: 'Method',   format: 'text',    align: 'left',  width: 150 },
+            { key: 'count',   label: 'Orders',   format: 'integer', align: 'right', width: 80 },
+            { key: 'revenue', label: 'Revenue',  format: 'inr',     align: 'right', width: 120 },
+            { key: 'value',   label: 'Share %',  format: 'text',    align: 'right', width: 80 },
+          ],
+          rows: payments.mix,
+          totals: null,
+        },
+        {
+          name: 'Top Items',
+          subtitle: `${topItems.items.length} items`,
+          columns: [
+            { key: 'name',    label: 'Item',     format: 'text',    align: 'left',  width: 200 },
+            { key: 'qty',     label: 'Qty',      format: 'integer', align: 'right', width: 80 },
+            { key: 'revenue', label: 'Revenue',  format: 'inr',     align: 'right', width: 120 },
+          ],
+          rows: topItems.items,
+          totals: null,
+        },
+        {
+          name: 'Discounts',
+          subtitle: 'Discount & offer summary',
+          columns: [
+            { key: 'label', label: 'Type',   format: 'text', align: 'left',  width: 200 },
+            { key: 'value', label: 'Amount', format: 'inr',  align: 'right', width: 120 },
+          ],
+          rows: [
+            { label: 'Direct Discount',  value: discounts.directDiscount },
+            { label: 'Coupon Discount',  value: discounts.couponDiscount },
+            { label: 'Loyalty Discount', value: discounts.loyaltyDiscount },
+            { label: 'Comp Items',       value: discounts.compItemTotal },
+            { label: 'Total Leakage',    value: discounts.totalLeakage },
+          ],
+          totals: null,
+        },
+      ],
+    };
+  };
+
+  const handleDownloadAction = (action) => { // BUG-485
+    let pdfWin = null;
+    if (action === 'pdf') pdfWin = openReportWindow();
+    try {
+      const payload = buildExportPayload();
+      if (!payload) return;
+      if (action === 'excel') exportReportAsExcel(payload);
+      else if (action === 'pdf') exportReportAsPDF(pdfWin, payload);
+    } catch (e) { console.error('dashboard export failed:', e); if (pdfWin && !pdfWin.closed) pdfWin.close(); }
+  };
+
   return (
     <div className="flex h-screen bg-white font-sans" data-testid="reports-module-dashboard">
       {/* Real Sidebar */}
       <Sidebar
         isExpanded={isSidebarExpanded}
-        setIsExpanded={setIsSidebarExpanded}
+        setIsExpanded={(v) => { setIsSidebarExpanded(v); localStorage.setItem('mygenie_sidebar_expanded', String(v)); }}
         isSilentMode={isSilentMode}
         setIsSilentMode={setIsSilentMode}
         onOpenSettings={() => {}}
@@ -186,7 +281,7 @@ const DashboardMockup = () => {
       <main className="flex-1 flex flex-col overflow-hidden bg-zinc-50">
         
         {/* Header */}
-        <header className="flex items-center justify-between px-8 py-5 bg-white border-b border-zinc-200" data-testid="reports-module-header">
+        <header className="flex items-center justify-between px-8 py-5 bg-white border-b border-zinc-200 flex-wrap gap-y-3" data-testid="reports-module-header"> {/* BUG-555 */}
           <div className="flex items-center gap-4">
             <button 
               className="p-2 hover:bg-zinc-100 rounded-lg transition-colors"
@@ -210,7 +305,7 @@ const DashboardMockup = () => {
             </div>
           </div>
 
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-3 flex-wrap">
             {/* Date Range Picker */}
             <div className={`flex items-center gap-2 px-3 py-2 border ${draftDirty && draftValid && !draftRangeExceeded ? 'border-[#F26B33]' : draftRangeExceeded ? 'border-red-400' : 'border-zinc-200'} bg-white rounded-lg transition-colors ${isLoading ? 'opacity-50' : ''}`} data-testid="reports-daterange-picker">
               <CalendarIcon className="w-4 h-4 text-zinc-500" />
@@ -222,6 +317,7 @@ const DashboardMockup = () => {
                   onChange={(e) => { setFromDate(e.target.value); setActivePreset(''); }}
                   disabled={isLoading}
                   min={minFromDate}
+                  max={maxToDate} // BUG-260: block future dates on From input
                   className="bg-transparent border-0 outline-none text-sm font-medium text-zinc-800 cursor-pointer focus:ring-0 p-0"
                   data-testid="reports-date-from"
                 />
@@ -261,8 +357,8 @@ const DashboardMockup = () => {
 
             {/* Quick range presets */}
             <div className={`flex items-center gap-1 px-1.5 py-1 bg-zinc-100 rounded-lg ${isLoading ? 'opacity-50' : ''}`} data-testid="reports-date-presets">
-              {['Today', '7D', '30D', 'MTD', 'FY'].map((p) => {
-                const isDisabledPreset = p === 'FY';
+              {['Today', '7D', 'LM', 'MTD', 'FY'].map((p) => {
+                const isDisabledPreset = false; // INV-001: FY enabled (365 days fits within 1-year cap)
                 return (
                   <button
                     key={p}
@@ -276,7 +372,7 @@ const DashboardMockup = () => {
                     }`}
                     data-testid={`reports-date-preset-${p.toLowerCase()}`}
                     onClick={() => !isDisabledPreset && handlePreset(p)}
-                    title={isDisabledPreset ? 'Coming soon — max range is 2 months' : ''}
+                    title={isDisabledPreset ? 'Coming soon' : ''}
                   >
                     {p}
                   </button>
@@ -286,16 +382,18 @@ const DashboardMockup = () => {
 
             {/* Export Buttons */}
             <button 
-              disabled={isLoading}
-              className={`flex items-center gap-2 px-3 py-2 bg-white border border-zinc-200 text-zinc-700 rounded-lg hover:bg-zinc-50 transition-colors text-sm font-medium shadow-sm ${isLoading ? 'opacity-50' : ''}`}
+              disabled={isLoading || !tiles}
+              onClick={() => handleDownloadAction('pdf')}
+              className={`flex items-center gap-2 px-3 py-2 bg-white border border-zinc-200 text-zinc-700 rounded-lg hover:bg-zinc-50 transition-colors text-sm font-medium shadow-sm ${isLoading || !tiles ? 'opacity-50 cursor-not-allowed' : ''}`}
               data-testid="reports-export-pdf-btn"
             >
               <FileText className="w-4 h-4 text-red-500" />
               PDF
             </button>
             <button 
-              disabled={isLoading}
-              className={`flex items-center gap-2 px-3 py-2 bg-white border border-zinc-200 text-zinc-700 rounded-lg hover:bg-zinc-50 transition-colors text-sm font-medium shadow-sm ${isLoading ? 'opacity-50' : ''}`}
+              disabled={isLoading || !tiles}
+              onClick={() => handleDownloadAction('excel')}
+              className={`flex items-center gap-2 px-3 py-2 bg-white border border-zinc-200 text-zinc-700 rounded-lg hover:bg-zinc-50 transition-colors text-sm font-medium shadow-sm ${isLoading || !tiles ? 'opacity-50 cursor-not-allowed' : ''}`}
               data-testid="reports-export-excel-btn"
             >
               <FileSpreadsheet className="w-4 h-4 text-green-600" />
@@ -705,3 +803,4 @@ const DashboardMockup = () => {
 };
 
 export default DashboardMockup;
+;

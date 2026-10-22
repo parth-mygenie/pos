@@ -110,7 +110,10 @@ const SettlementMockup = () => {
   const [openingModal, setOpeningModal] = useState(false);
   const [transferModal, setTransferModal] = useState(null);
   const [actualBalances, setActualBalances] = useState({});
-  const [isSidebarExpanded, setIsSidebarExpanded] = useState(false);
+  // BUG-361: persist sidebar state across reloads
+  const [isSidebarExpanded, setIsSidebarExpanded] = useState(
+    () => localStorage.getItem('mygenie_sidebar_expanded') === 'true'
+  );
 
   const totals = SEED_TOTALS;
   const waiters = SEED_WAITERS;
@@ -131,7 +134,7 @@ const SettlementMockup = () => {
       {/* Sidebar — same pattern as Audit Report */}
       <Sidebar
         isExpanded={isSidebarExpanded}
-        setIsExpanded={setIsSidebarExpanded}
+        setIsExpanded={(v) => { setIsSidebarExpanded(v); localStorage.setItem('mygenie_sidebar_expanded', String(v)); }}
         isSilentMode={false}
         setIsSilentMode={() => {}}
         onOpenSettings={() => {}}

@@ -31,9 +31,13 @@ const fmtTime = (str) => {
 
 const EMPTY_LINE = {
   categoryId: "", itemName: "", amount: "", paymentMethod: "Cash Draw", // BUG-156: default to Cash Draw
-  quantity: "", unit: "",
+  quantity: "", unit: "", physical_quantity: "",                         // BUG-176: physical_quantity user-enterable
   unitPrice: null,     // BUG-154: null = manual amount; non-null = qty×price auto-calc
   isCustomItem: false, // BUG-155: true when free-text item (not from master) → show category select
+  notes: "",             // BUG-177: notes field — backend accepts and stores
+  payment_made_to: "",   // CR-087: who payment was made to (optional free-text)
+  payment_ref_id: "",    // CR-087: payment reference ID (optional free-text)
+  splitPayments: null,   // CR-083: null=single payment, [{method,amount}]=split mode
 };
 
 // ─── KPI Card ────────────────────────────────────────────────────────────────
@@ -164,7 +168,7 @@ const ItemCombobox = ({ items, value, onChange, placeholder, disabled, categoryN
 };
 
 // ─── Single Entry Line ────────────────────────────────────────────────────────
-const EntryLine = ({ line, idx, categories, filteredItems, paymentMethods, units, onChange, onRemove, showRemove, showError }) => {
+const EntryLine = ({ line, idx, categories, filteredItems, paymentMethods, units, onChange, onRemove, showRemove, showError, onSplitToggle, onSplitChange, onRemoveSplit, cashDrawBalance }) => {
   const handleField = (field, val) => onChange(idx, field, val);
 
   const handleItemSelect = (title, item) => {
@@ -180,20 +184,23 @@ const EntryLine = ({ line, idx, categories, filteredItems, paymentMethods, units
     const price = item?.unitPriceAmount ?? null;
     onChange(idx, "unitPrice", price);
     if (price) {
-      // auto-fill unit from item, auto-calc amount
+      // BUG-204: qty starts empty, amount starts empty (shows ₹0). User must enter qty → total = unitPrice × qty live.
       onChange(idx, "unit", item?.unit ?? "");
-      onChange(idx, "amount", String(price * parseFloat(line.quantity || 1)));
+      onChange(idx, "quantity", "");
+      onChange(idx, "amount", "");
     } else {
       onChange(idx, "amount", ""); // clear any previous auto-calc
     }
   };
 
-  // BUG-154: recalculate amount when qty changes (only when item has a unit price)
-  const handleQtyChange = (val) => {
-    onChange(idx, "quantity", val);
-    if (line.unitPrice && val) {
-      onChange(idx, "amount", String(line.unitPrice * parseFloat(val || 0)));
-    }
+
+  // BUG-204: live auto-calc for priced items — amount = unitPrice × qty on every keystroke
+  const handlePricedQtyChange = (i, qtyStr) => {
+    handleField("quantity", qtyStr);
+    const qty = parseFloat(qtyStr) || 0;
+    const price = line.unitPrice || 0;
+    const total = Math.round(price * qty * 100) / 100;
+    handleField("amount", qty > 0 ? String(total) : "");
   };
 
   const inputCls = "px-3 py-2 rounded-lg border text-sm outline-none focus:ring-1 focus:ring-orange-200 bg-white w-full";
@@ -201,12 +208,12 @@ const EntryLine = ({ line, idx, categories, filteredItems, paymentMethods, units
   const catError = false;
 
   return (
-    <div className="flex flex-wrap gap-2 items-start p-3 rounded-lg border bg-gray-50"
+    <div className="flex flex-wrap gap-2 items-center p-3 rounded-lg border bg-gray-50"
       style={{ borderColor: COLORS.borderGray }}>
 
       {/* Item — always first, no category gate */}
       {/* BUG-154 BUG-155: item drives qty/price/category logic */}
-      <div className="min-w-[160px] flex-[2]">
+      <div className="min-w-[160px] flex-1">
         <ItemCombobox
           items={filteredItems(line.categoryId)}
           value={line.itemName}
@@ -235,37 +242,6 @@ const EntryLine = ({ line, idx, categories, filteredItems, paymentMethods, units
         </div>
       )}
 
-      {/* BUG-154: Qty + Unit — shown only when item has a unit price */}
-      {line.unitPrice != null && line.unitPrice > 0 && (
-        <>
-          <div className="min-w-[80px] w-[80px]">
-            <input
-              type="number" min="0" step="0.01"
-              value={line.quantity}
-              onChange={e => handleQtyChange(e.target.value)}
-              placeholder="Qty"
-              className={inputCls}
-              style={{ borderColor: COLORS.borderGray, color: COLORS.darkText }}
-              data-testid={`expense-qty-input-${idx}`}
-            />
-          </div>
-          <div className="min-w-[90px] w-[90px]">
-            <select
-              value={line.unit}
-              onChange={e => handleField("unit", e.target.value)}
-              className={inputCls}
-              style={{ borderColor: COLORS.borderGray, color: line.unit ? COLORS.darkText : COLORS.grayText }}
-              data-testid={`expense-unit-select-${idx}`}
-            >
-              <option value="">Unit</option>
-              {units.map(u => (
-                <option key={u.value} value={u.value}>{u.label}</option>
-              ))}
-            </select>
-          </div>
-        </>
-      )}
-
       {/* Amount — editable for manual items; read-only auto-calc for priced items */}
       <div className="min-w-[110px] flex-1">
         <div className="relative">
@@ -276,7 +252,7 @@ const EntryLine = ({ line, idx, categories, filteredItems, paymentMethods, units
             value={line.amount}
             onChange={e => line.unitPrice ? null : handleField("amount", e.target.value)}
             readOnly={!!(line.unitPrice && line.unitPrice > 0)}
-            placeholder="Amount"
+            placeholder={line.unitPrice > 0 ? "0" : "Amount"}
             className={inputCls + " pl-6"}
             style={{
               borderColor: COLORS.borderGray,
@@ -290,21 +266,99 @@ const EntryLine = ({ line, idx, categories, filteredItems, paymentMethods, units
         </div>
       </div>
 
-      {/* Payment Method */}
-      <div className="min-w-[130px] flex-1">
-        <select
-          value={line.paymentMethod}
-          onChange={e => handleField("paymentMethod", e.target.value)}
-          className={inputCls}
-          style={{ borderColor: COLORS.borderGray, color: line.paymentMethod ? COLORS.darkText : COLORS.grayText }}
-          data-testid={`expense-payment-select-${idx}`}
+      {/* Payment Method — hidden when split is active (shown per-row instead) */}
+      {!line.splitPayments && (
+        <div className="min-w-[130px] flex-1">
+          <select
+            value={line.paymentMethod}
+            onChange={e => handleField("paymentMethod", e.target.value)}
+            className={inputCls}
+            style={{ borderColor: COLORS.borderGray, color: line.paymentMethod ? COLORS.darkText : COLORS.grayText }}
+            data-testid={`expense-payment-select-${idx}`}
+          >
+            <option value="">Payment</option>
+            {paymentMethods.map(pm => (
+              <option key={pm} value={pm}>{pm}</option>
+            ))}
+          </select>
+        </div>
+      )}
+
+      {/* CR-083: Split Payment button */}
+      {!line.splitPayments && line.amount && parseFloat(line.amount) > 0 && (
+        <button type="button" onClick={() => onSplitToggle(idx)}
+          className="flex-shrink-0 px-2.5 py-1.5 text-xs font-semibold rounded-lg border-[1.5px] border-dashed hover:bg-orange-50 transition-colors whitespace-nowrap"
+          style={{ borderColor: COLORS.primaryOrange, color: COLORS.primaryOrange }}
+          data-testid={`expense-split-btn-${idx}`}
         >
-          <option value="">Payment</option>
-          {paymentMethods.map(pm => (
-            <option key={pm} value={pm}>{pm}</option>
-          ))}
-        </select>
-      </div>
+          Split
+        </button>
+      )}
+
+      {/* BUG-204: Case A — priced item: qty input + breakdown hint (unit dropdown removed — unit comes from stock master) */}
+      {line.unitPrice != null && line.unitPrice > 0 && (
+        <>
+          <div className="min-w-[75px] w-[75px]">
+            <input
+              type="number" min="0" step="1"
+              value={line.quantity}
+              onChange={e => handlePricedQtyChange(idx, e.target.value)}
+              placeholder="Qty"
+              className={inputCls}
+              style={{ borderColor: COLORS.borderGray, color: COLORS.darkText }}
+              data-testid={`expense-qty-input-${idx}`}
+            />
+          </div>
+          {line.quantity && parseFloat(line.quantity) > 0 && (
+            <span className="text-xs whitespace-nowrap self-center" style={{ color: COLORS.grayText }}
+              data-testid={`expense-breakdown-${idx}`}>
+              ₹{line.unitPrice}/{line.unit || "unit"} × {line.quantity} = ₹{line.amount}
+            </span>
+          )}
+        </>
+      )}
+
+      {/* BUG-176: Case B — qty / unit / phys.qty at end, after Amount + Payment */}
+      {(!line.unitPrice || line.unitPrice <= 0) && (
+        <>
+          <div className="min-w-[75px] w-[75px]">
+            <input
+              type="number" min="0" step="0.01"
+              value={line.quantity}
+              onChange={e => handleField("quantity", e.target.value)}
+              placeholder="Qty"
+              className={inputCls}
+              style={{ borderColor: COLORS.borderGray, color: COLORS.darkText }}
+              data-testid={`expense-qty-input-${idx}`}
+            />
+          </div>
+          <div className="min-w-[85px] w-[85px]">
+            <select
+              value={line.unit}
+              onChange={e => handleField("unit", e.target.value)}
+              className={inputCls}
+              style={{ borderColor: COLORS.borderGray, color: line.unit ? COLORS.darkText : COLORS.grayText }}
+              data-testid={`expense-unit-select-${idx}`}
+            >
+              <option value="">Unit</option>
+              {units.map(u => (
+                <option key={u.value} value={u.value}>{u.label}</option>
+              ))}
+            </select>
+          </div>
+          <div className="min-w-[75px] w-[75px]">
+            <input
+              type="number" min="0" step="0.01"
+              value={line.physical_quantity}
+              onChange={e => handleField("physical_quantity", e.target.value)}
+              placeholder="Phys. Qty"
+              className={inputCls}
+              style={{ borderColor: COLORS.borderGray, color: COLORS.darkText }}
+              data-testid={`expense-physical-qty-input-${idx}`}
+            />
+          </div>
+        </>
+      )}
 
       {/* Remove line */}
       {showRemove && (
@@ -312,6 +366,104 @@ const EntryLine = ({ line, idx, categories, filteredItems, paymentMethods, units
           <X className="w-4 h-4" style={{ color: COLORS.errorText }} />
         </button>
       )}
+
+      {/* CR-083: Split Payment Rows — shown when splitPayments is active */}
+      {line.splitPayments && (() => {
+        const lineTotal = parseFloat(line.amount) || 0;
+        const splitSum = line.splitPayments.reduce((acc, sp) => acc + (parseFloat(sp.amount) || 0), 0);
+        const isMatch = Math.abs(splitSum - lineTotal) < 0.01;
+        const remainder = lineTotal - splitSum;
+        return (
+          <div className="w-full mt-2 pt-2 border-t border-dashed" style={{ borderColor: '#E0D5C8' }}>
+            {line.splitPayments.map((sp, si) => (
+              <div key={si} className="flex items-center gap-2 py-1.5"
+                style={si > 0 ? { borderTop: '1px solid #F0EBE4', paddingTop: 8 } : {}}
+                data-testid={`expense-split-row-${idx}-${si}`}>
+                <span className="text-xs font-bold w-5 text-center" style={{ color: COLORS.primaryOrange }}>{si + 1}</span>
+                <div className="flex-1">
+                  <select value={sp.method}
+                    onChange={e => onSplitChange(idx, si, 'method', e.target.value)}
+                    className={inputCls}
+                    style={{ borderColor: COLORS.primaryOrange, color: sp.method ? COLORS.darkText : COLORS.grayText, fontSize: 12 }}
+                    data-testid={`expense-split-method-${idx}-${si}`}>
+                    <option value="">Payment method</option>
+                    {paymentMethods.map(pm => <option key={pm} value={pm}>{pm}</option>)}
+                  </select>
+                  {sp.method === 'Cash Draw' && cashDrawBalance != null && (
+                    <div className="text-[10px] mt-0.5" style={{ color: parseFloat(sp.amount || 0) > cashDrawBalance ? COLORS.errorText : '#888' }}>
+                      Available: <span style={{ fontWeight: 700, color: parseFloat(sp.amount || 0) > cashDrawBalance ? COLORS.errorText : '#2F855A' }}>
+                        ₹{cashDrawBalance.toLocaleString()}
+                      </span>
+                      {parseFloat(sp.amount || 0) > cashDrawBalance && <span style={{ color: COLORS.errorText }}> — insufficient</span>}
+                    </div>
+                  )}
+                  {sp.method === 'Unpaid' && (
+                    <div className="text-[10px] mt-0.5" style={{ color: COLORS.errorText }}>
+                      Will be tracked as outstanding
+                    </div>
+                  )}
+                </div>
+                <div style={{ width: 110 }}>
+                  <input type="number" min="0" step="0.01" value={sp.amount}
+                    onChange={e => onSplitChange(idx, si, 'amount', e.target.value)}
+                    placeholder="Amount"
+                    className={inputCls}
+                    style={{ borderColor: COLORS.primaryOrange, fontSize: 12 }}
+                    data-testid={`expense-split-amount-${idx}-${si}`} />
+                </div>
+                {line.splitPayments.length > 1 && (
+                  <button type="button" onClick={() => onRemoveSplit(idx, si)}
+                    className="w-6 h-6 rounded flex items-center justify-center text-xs font-bold hover:bg-red-100"
+                    style={{ background: '#FEE', color: COLORS.errorText }}
+                    data-testid={`expense-split-remove-${idx}-${si}`}>×</button>
+                )}
+              </div>
+            ))}
+            {/* Validation bar */}
+            <div className="flex items-center justify-between mt-1.5 px-2 py-1.5 rounded-lg text-xs font-semibold"
+              style={{ background: isMatch ? '#F0FFF4' : '#FFF5F5', color: isMatch ? '#2F855A' : COLORS.errorText }}
+              data-testid={`expense-split-validation-${idx}`}>
+              <span>{isMatch ? '✓ Split amounts match total' : `✗ Amounts don't match — ₹${Math.abs(remainder).toFixed(2)} ${remainder > 0 ? 'remaining' : 'over'}`}</span>
+              <span>₹{line.splitPayments.map(sp => parseFloat(sp.amount) || 0).join(' + ₹')} = ₹{splitSum.toFixed(0)} / ₹{lineTotal.toFixed(0)}</span>
+            </div>
+            {/* Unsplit button */}
+            <button type="button" onClick={() => onSplitToggle(idx)}
+              className="mt-1.5 text-[10px] font-medium hover:underline"
+              style={{ color: COLORS.grayText }}
+              data-testid={`expense-unsplit-btn-${idx}`}>
+              Cancel split
+            </button>
+          </div>
+        );
+      })()}
+
+      {/* CR-087: Row 2 — Notes (smaller) + Payment Made To + Payment Ref ID */}
+      <div className="flex gap-2">
+        <input
+          value={line.notes}
+          onChange={e => handleField("notes", e.target.value)}
+          placeholder="Notes (optional)"
+          className={inputCls + " flex-1 min-w-0"}
+          style={{ borderColor: COLORS.borderGray, color: COLORS.darkText }}
+          data-testid={`expense-notes-input-${idx}`}
+        />
+        <input
+          value={line.payment_made_to}
+          onChange={e => handleField("payment_made_to", e.target.value)}
+          placeholder="Paid to (optional)"
+          className={inputCls + " flex-1 min-w-0"}
+          style={{ borderColor: COLORS.borderGray, color: COLORS.darkText }}
+          data-testid={`expense-payment-made-to-input-${idx}`}
+        />
+        <input
+          value={line.payment_ref_id}
+          onChange={e => handleField("payment_ref_id", e.target.value)}
+          placeholder="Ref ID (optional)"
+          className={inputCls + " flex-1 min-w-0"}
+          style={{ borderColor: COLORS.borderGray, color: COLORS.darkText }}
+          data-testid={`expense-payment-ref-id-input-${idx}`}
+        />
+      </div>
     </div>
   );
 };
@@ -343,6 +495,9 @@ const ExpenseEntryPanel = () => {
 
   // Delete confirm
   const [deletingId, setDeletingId] = useState(null);
+
+  // CR-083: Cash Draw available balance
+  const [cashDrawBalance, setCashDrawBalance] = useState(null);
 
   // ── Filtered items per category ───────────────────────────────────
   const filteredItems = useCallback((categoryId) => {
@@ -433,11 +588,54 @@ const ExpenseEntryPanel = () => {
 
   const resetForm = () => { setLines([{ ...EMPTY_LINE }]); setShowErrors(false); };
 
+  // CR-083: Split payment helpers
+  const handleSplitToggle = (idx) => {
+    setLines(prev => prev.map((l, i) => {
+      if (i !== idx) return l;
+      if (l.splitPayments) {
+        // Unsplit → restore single payment from first split row
+        const first = l.splitPayments[0];
+        return { ...l, splitPayments: null, paymentMethod: first?.method || l.paymentMethod };
+      }
+      // Split → Row 1 = current method+amount, Row 2 = empty remainder
+      const currentAmount = parseFloat(l.amount) || 0;
+      return {
+        ...l,
+        splitPayments: [
+          { method: l.paymentMethod, amount: String(currentAmount) },
+          { method: '', amount: '' },
+        ],
+      };
+    }));
+  };
+
+  const handleSplitChange = (lineIdx, splitIdx, field, val) => {
+    setLines(prev => prev.map((l, i) => {
+      if (i !== lineIdx || !l.splitPayments) return l;
+      const updated = l.splitPayments.map((sp, si) =>
+        si === splitIdx ? { ...sp, [field]: val } : sp
+      );
+      return { ...l, splitPayments: updated };
+    }));
+  };
+
+  const removeSplitRow = (lineIdx, splitIdx) => {
+    setLines(prev => prev.map((l, i) => {
+      if (i !== lineIdx || !l.splitPayments) return l;
+      const remaining = l.splitPayments.filter((_, si) => si !== splitIdx);
+      if (remaining.length <= 1) {
+        // Only 1 row left → unsplit
+        return { ...l, splitPayments: null, paymentMethod: remaining[0]?.method || l.paymentMethod, amount: remaining[0]?.amount || l.amount };
+      }
+      return { ...l, splitPayments: remaining };
+    }));
+  };
+
   // ── Save expense ──────────────────────────────────────────────────
   const handleSave = async () => {
     // Validate: category + item + amount + payment all required
     // BUG-153: category optional — only item name, amount, payment method required
-    const hasErrors = lines.some(l => !l.itemName || !l.amount || !l.paymentMethod);
+    const hasErrors = lines.some(l => !l.itemName || !l.amount || (!l.splitPayments && !l.paymentMethod));
     if (hasErrors) {
       setShowErrors(true);
       toast({
@@ -447,19 +645,53 @@ const ExpenseEntryPanel = () => {
       });
       return;
     }
+    // CR-083: Validate split payment sums
+    const splitErrors = lines.some(l => {
+      if (!l.splitPayments) return false;
+      const total = parseFloat(l.amount) || 0;
+      const splitSum = l.splitPayments.reduce((acc, sp) => acc + (parseFloat(sp.amount) || 0), 0);
+      return Math.abs(splitSum - total) > 0.01 || l.splitPayments.some(sp => !sp.method || !sp.amount);
+    });
+    if (splitErrors) {
+      setShowErrors(true);
+      toast({
+        title: "Split payment error",
+        description: "Split amounts must equal the line total and each must have a payment method.",
+        variant: "destructive",
+      });
+      return;
+    }
     setShowErrors(false);
     setSaving(true);
     try {
       const dateStr = formatDateDDMMYYYY(selectedDate);
-      const details = lines.map(l => ({
-        expense: l.itemName,
-        amount: parseFloat(l.amount),
-        payment_method: l.paymentMethod,
-        quantity: parseFloat(l.quantity || 0),
-        unit: l.unit || "",
-      }));
-      const total = lines.reduce((acc, l) => acc + parseFloat(l.amount || 0), 0);
-      await expenseService.addExpenseEntry(dateStr, total, details);
+      // CR-083: flatMap — expand split lines into multiple API detail entries
+      const details = lines.flatMap(l => {
+        const base = {
+          expense: l.itemName,
+          quantity: parseFloat(l.quantity || 0),
+          unit: l.unit || "",
+          physical_quantity: parseFloat(l.physical_quantity || 0), // BUG-176
+          notes: l.notes || "",               // BUG-177
+          category_id: l.categoryId ? parseInt(l.categoryId, 10) : null, // BUG-199
+          payment_made_to: l.payment_made_to || "",  // CR-087
+          payment_ref_id:  l.payment_ref_id  || "",  // CR-087
+        };
+        if (l.splitPayments) {
+          return l.splitPayments.map(sp => ({
+            ...base,
+            amount: parseFloat(sp.amount),
+            payment_method: sp.method,
+          }));
+        }
+        return [{ ...base, amount: parseFloat(l.amount), payment_method: l.paymentMethod }];
+      });
+      const total = details.reduce((acc, d) => acc + (d.amount || 0), 0);
+      const res = await expenseService.addExpenseEntry(dateStr, total, details);
+      // CR-083: Extract cash draw balance from response
+      if (res?.data?.total_cash_available != null) {
+        setCashDrawBalance(parseFloat(res.data.total_cash_available));
+      }
       toast({ title: "Saved", description: `${lines.length} expense${lines.length > 1 ? "s" : ""} added` });
       resetForm();
       fetchReport(selectedDate);
@@ -481,7 +713,19 @@ const ExpenseEntryPanel = () => {
       payment_method: tx.paymentMethod,
       quantity: String(tx.quantity || ""),
       unit: tx.unit || "",
+      physical_quantity: String(tx.physical_quantity || ""), // BUG-176
+      notes:            tx.notes           || "",  // BUG-177
+      category_id:      tx.categoryId      ?? null,  // BUG-199
+      payment_made_to:  tx.paymentMadeTo   || "",  // CR-087
+      payment_ref_id:   tx.paymentRefId    || "",  // CR-087
     });
+    // BUG-204: cross-reference current unitPrice from stock items for auto-calc mode on edit
+    const matchedItem = allItems.find(
+      i => i.title?.toLowerCase() === tx.expense?.toLowerCase() && i.unitPriceAmount
+    );
+    if (matchedItem && parseFloat(tx.quantity) > 0) {
+      setEditRow(prev => ({ ...prev, unitPrice: matchedItem.unitPriceAmount }));
+    }
   };
 
   const cancelEdit = () => { setEditingId(null); setEditRow({}); };
@@ -577,6 +821,10 @@ const ExpenseEntryPanel = () => {
               onRemove={removeLine}
               showRemove={lines.length > 1}
               showError={showErrors}
+              onSplitToggle={handleSplitToggle}
+              onSplitChange={handleSplitChange}
+              onRemoveSplit={removeSplitRow}
+              cashDrawBalance={cashDrawBalance}
             />
           ))}
         </div>
@@ -644,8 +892,16 @@ const ExpenseEntryPanel = () => {
                     <th className="px-4 py-2.5 text-left text-xs font-semibold uppercase tracking-wide" style={{ color: COLORS.grayText }}>Time</th>
                     <th className="px-4 py-2.5 text-left text-xs font-semibold uppercase tracking-wide" style={{ color: COLORS.grayText }}>Item</th>
                     <th className="px-4 py-2.5 text-left text-xs font-semibold uppercase tracking-wide" style={{ color: COLORS.grayText }}>Category</th>
+                    {/* BUG-205: Qty + Unit columns */}
+                    <th className="px-4 py-2.5 text-right text-xs font-semibold uppercase tracking-wide" style={{ color: COLORS.grayText }}>Qty</th>
+                    <th className="px-4 py-2.5 text-left text-xs font-semibold uppercase tracking-wide" style={{ color: COLORS.grayText }}>Unit</th>
                     <th className="px-4 py-2.5 text-right text-xs font-semibold uppercase tracking-wide" style={{ color: COLORS.grayText }}>Amount</th>
                     <th className="px-4 py-2.5 text-left text-xs font-semibold uppercase tracking-wide" style={{ color: COLORS.grayText }}>Payment</th>
+                    <th className="px-4 py-2.5 text-left text-xs font-semibold uppercase tracking-wide" style={{ color: COLORS.grayText }}>Added By</th>
+                    <th className="px-4 py-2.5 text-left text-xs font-semibold uppercase tracking-wide" style={{ color: COLORS.grayText }}>Notes</th>
+                    {/* CR-087 */}
+                    <th className="px-4 py-2.5 text-left text-xs font-semibold uppercase tracking-wide" style={{ color: COLORS.grayText }}>Paid To</th>
+                    <th className="px-4 py-2.5 text-left text-xs font-semibold uppercase tracking-wide" style={{ color: COLORS.grayText }}>Ref ID</th>
                     <th className="px-4 py-2.5 text-center text-xs font-semibold uppercase tracking-wide" style={{ color: COLORS.grayText }}>Actions</th>
                   </tr>
                 </thead>
@@ -660,26 +916,60 @@ const ExpenseEntryPanel = () => {
                       {editingId === tx.id ? (
                         <>
                           <td className="px-4 py-2" style={{ color: COLORS.grayText }}>{fmtTime(tx.time)}</td>
-                          <td className="px-4 py-2">
-                            {/* CR-059 BUG-FIX: edit-expense API rejects free-text — must use master item combobox */}
-                            <ItemCombobox
-                              items={allItems}
-                              value={editRow.expense}
-                              onChange={(title) => setEditRow(r => ({ ...r, expense: title }))}
-                              placeholder="Select item..."
-                              testId={`expense-edit-item-${editingId}`}
-                            />
+                          <td className="px-4 py-2.5 font-medium" style={{ color: COLORS.darkText }}>
+                            {/* BUG-178: item name read-only in edit mode */}
+                            {editRow.expense}
                           </td>
                           <td className="px-4 py-2" style={{ color: COLORS.grayText }}>{tx.category}</td>
+                          {/* BUG-205: Qty + Unit (read-only in edit) */}
+                          <td className="px-4 py-2 text-right text-xs" style={{ color: COLORS.grayText }}>{tx.quantity || "—"}</td>
+                          <td className="px-4 py-2 text-xs" style={{ color: COLORS.grayText }}>{tx.unit || "—"}</td>
+                          {/* BUG-203 Sub-D: conditional amount — qty input for priced items, plain amount for others */}
                           <td className="px-4 py-2">
-                            <input type="number" value={editRow.d_amount} onChange={e => setEditRow(r => ({ ...r, d_amount: e.target.value }))}
-                              className={inputCls + " w-24 text-right"} style={inputStyle} />
+                            {editRow.unitPrice > 0 ? (
+                              <div className="flex items-center gap-1">
+                                <input type="number" value={editRow.quantity}
+                                  onChange={e => {
+                                    const q = e.target.value;
+                                    const total = Math.round((editRow.unitPrice * (parseFloat(q) || 0)) * 100) / 100;
+                                    setEditRow(r => ({ ...r, quantity: q, d_amount: total > 0 ? String(total) : "" }));
+                                  }}
+                                  placeholder="Qty" className={inputCls + " w-16 text-right"} style={inputStyle}
+                                  data-testid={`expense-edit-qty-${tx.id}`} />
+                                <span className="text-xs whitespace-nowrap" style={{ color: COLORS.grayText }}>
+                                  = ₹{editRow.d_amount || "0"}
+                                </span>
+                              </div>
+                            ) : (
+                              <input type="number" value={editRow.d_amount} onChange={e => setEditRow(r => ({ ...r, d_amount: e.target.value }))}
+                                className={inputCls + " w-24 text-right"} style={inputStyle} />
+                            )}
                           </td>
                           <td className="px-4 py-2">
                             <select value={editRow.payment_method} onChange={e => setEditRow(r => ({ ...r, payment_method: e.target.value }))}
                               className={inputCls} style={inputStyle}>
                               {paymentMethods.map(pm => <option key={pm} value={pm}>{pm}</option>)}
                             </select>
+                          </td>
+                          {/* BUG-181: Added By (read-only in edit) */}
+                          <td className="px-4 py-2 text-xs" style={{ color: COLORS.grayText }}>{tx.employeeName || "—"}</td>
+                          {/* BUG-177: Notes (editable in edit) */}
+                          <td className="px-4 py-2">
+                            <input value={editRow.notes || ""} onChange={e => setEditRow(r => ({ ...r, notes: e.target.value }))}
+                              placeholder="Notes" className={inputCls + " w-28"} style={inputStyle}
+                              data-testid={`expense-edit-notes-${tx.id}`} />
+                          </td>
+                          {/* CR-087: Payment Made To (editable in edit) */}
+                          <td className="px-4 py-2">
+                            <input value={editRow.payment_made_to || ""} onChange={e => setEditRow(r => ({ ...r, payment_made_to: e.target.value }))}
+                              placeholder="Paid to" className={inputCls + " w-28"} style={inputStyle}
+                              data-testid={`expense-edit-payment-made-to-${tx.id}`} />
+                          </td>
+                          {/* CR-087: Payment Ref ID (editable in edit) */}
+                          <td className="px-4 py-2">
+                            <input value={editRow.payment_ref_id || ""} onChange={e => setEditRow(r => ({ ...r, payment_ref_id: e.target.value }))}
+                              placeholder="Ref ID" className={inputCls + " w-24"} style={inputStyle}
+                              data-testid={`expense-edit-payment-ref-id-${tx.id}`} />
                           </td>
                           <td className="px-4 py-2">
                             <div className="flex items-center justify-center gap-1">
@@ -705,8 +995,18 @@ const ExpenseEntryPanel = () => {
                               {tx.category || "—"}
                             </span>
                           </td>
+                          {/* BUG-205: Qty + Unit columns */}
+                          <td className="px-4 py-2.5 text-right text-xs" style={{ color: COLORS.grayText }} data-testid={`expense-qty-${tx.id}`}>{tx.quantity || "—"}</td>
+                          <td className="px-4 py-2.5 text-xs" style={{ color: COLORS.grayText }} data-testid={`expense-unit-${tx.id}`}>{tx.unit || "—"}</td>
                           <td className="px-4 py-2.5 text-right font-semibold" style={{ color: COLORS.darkText }}>{fmt(tx.amount)}</td>
                           <td className="px-4 py-2.5 text-xs" style={{ color: COLORS.grayText }}>{tx.paymentMethod}</td>
+                          {/* BUG-181: Added By column */}
+                          <td className="px-4 py-2.5 text-xs" style={{ color: COLORS.grayText }} data-testid={`expense-added-by-${tx.id}`}>{tx.employeeName || "—"}</td>
+                          {/* BUG-177: Notes column */}
+                          <td className="px-4 py-2.5 text-xs max-w-[150px] truncate" style={{ color: COLORS.grayText }} data-testid={`expense-notes-${tx.id}`}>{tx.notes || "—"}</td>
+                          {/* CR-087 */}
+                          <td className="px-4 py-2.5 text-xs max-w-[120px] truncate" style={{ color: COLORS.grayText }} data-testid={`expense-payment-made-to-${tx.id}`}>{tx.paymentMadeTo || "—"}</td>
+                          <td className="px-4 py-2.5 text-xs max-w-[100px] truncate" style={{ color: COLORS.grayText }} data-testid={`expense-payment-ref-id-${tx.id}`}>{tx.paymentRefId || "—"}</td>
                           <td className="px-4 py-2.5">
                             <div className="flex items-center justify-center gap-1">
                               <button onClick={() => startEdit(tx)}
@@ -728,11 +1028,11 @@ const ExpenseEntryPanel = () => {
                 </tbody>
                 <tfoot>
                   <tr style={{ background: COLORS.sectionBg }}>
-                    <td colSpan={3} className="px-4 py-3 text-sm font-semibold" style={{ color: COLORS.darkText }}>Total</td>
+                    <td colSpan={5} className="px-4 py-3 text-sm font-semibold" style={{ color: COLORS.darkText }}>Total</td>
                     <td className="px-4 py-3 text-right text-sm font-bold" style={{ color: COLORS.primaryOrange }} data-testid="expense-total-amount">
                       {fmt(totalAmount || kpis.total)}
                     </td>
-                    <td colSpan={2} />
+                    <td colSpan={6} />{/* CR-087: 5+1+6=12 cols */}
                   </tr>
                 </tfoot>
               </table>

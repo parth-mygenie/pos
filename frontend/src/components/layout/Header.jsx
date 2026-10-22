@@ -25,7 +25,7 @@ const allStatusFilters = [
   { id: "pending", fOrderStatus: 7, label: "YTC" },           // Yet to Confirm
   { id: "preparing", fOrderStatus: 1, label: "Preparing" },
   { id: "ready", fOrderStatus: 2, label: "Ready" },
-  { id: "served", fOrderStatus: 5, label: "Served" },
+  { id: "served", fOrderStatus: 5, label: "Serve" }, // BUG-581: action word
   { id: "pendingPayment", fOrderStatus: 9, label: "Pending Pay" },
   { id: "paid", fOrderStatus: 6, label: "Paid" },
   { id: "cancelled", fOrderStatus: 3, label: "Cancelled" },
@@ -45,6 +45,8 @@ const Header = ({
   setActiveView,
   dashboardView = 'channel',
   setDashboardView,
+  channelActiveFirst,          // CR-429
+  onChannelActiveFirstToggle,  // CR-429
   hiddenChannels = [],
   hiddenStatuses = [],
   enabledStatuses = [],
@@ -68,8 +70,10 @@ const Header = ({
   posCount = 0
 }) => {
   const [isSearchFocused, setIsSearchFocused] = useState(false);
+  const [tabletDropdownOpen, setTabletDropdownOpen] = useState(false); // CR-414: tablet filter dropdown
   const searchRef = useRef(null);
   const dropdownRef = useRef(null);
+  const tabletDropdownRef = useRef(null); // CR-414: tablet dropdown click-outside ref
 
   // Filter channels based on restaurant features
   const { features } = useRestaurant();
@@ -96,6 +100,21 @@ const Header = ({
     };
     document.addEventListener("mousedown", handleClickOutside);
     return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
+
+  // CR-414: close tablet filter dropdown on outside tap/click
+  useEffect(() => {
+    const handler = (e) => {
+      if (tabletDropdownRef.current && !tabletDropdownRef.current.contains(e.target)) {
+        setTabletDropdownOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    document.addEventListener("touchstart", handler);
+    return () => {
+      document.removeEventListener("mousedown", handler);
+      document.removeEventListener("touchstart", handler);
+    };
   }, []);
 
   // Req 2: Order Taking flag — when false, hide the Add button. Cross-tab sync
@@ -155,7 +174,7 @@ const Header = ({
     switch (fOrderStatus) {
       case 1: return "Preparing";
       case 2: return "Ready";
-      case 3: return "Served";
+      case 3: return "Serve"; // BUG-581: action word
       default: return null;
     }
   };
@@ -225,6 +244,10 @@ const Header = ({
     if (activeStatuses.includes(statusId)) {
       const next = activeStatuses.filter(s => s !== statusId);
       if (next.length === 0) return;
+      // BUG-566: guard against removing last VISIBLE filter
+      // (activeStatuses may contain non-visible IDs not shown in visibleStatusFilters.slice(0,6))
+      const visibleNext = next.filter(s => visibleStatusFilters.some(f => f.id === s));
+      if (visibleNext.length === 0) return;
       setActiveStatuses(next);
     } else {
       setActiveStatuses([...activeStatuses, statusId]);
@@ -251,7 +274,7 @@ const Header = ({
 
           {/* Filter Pills - Swap based on dashboardView (max 6) */}
           {/* Status View → Channel filters | Channel View → Status filters */}
-          <nav className="flex items-center gap-1 ml-4">
+          <nav className="hidden xl:flex items-center gap-1 ml-4"> {/* CR-414 + BUG-555 WP-C: pills hidden <1280px */}
             {dashboardView === 'status' ? (
               /* Channel Filter Pills (for Status View - filter within status columns) */
               visibleChannelFilters.map((channel) => {
@@ -313,9 +336,108 @@ const Header = ({
               >
                 Schedule
               </button>
+              {/* CR-429: Active First toggle — Channel View only */}
+              <div style={{ width: 1, height: 18, background: '#E5E5E5', margin: '0 4px' }} />
+              <button
+                data-testid="filter-active-first"
+                onClick={onChannelActiveFirstToggle}
+                className="py-2 px-2.5 rounded-lg text-sm font-medium transition-colors"
+                style={{
+                  backgroundColor: channelActiveFirst ? 'rgba(242,107,51,0.08)' : 'transparent',
+                  color: channelActiveFirst ? COLORS.primaryOrange : COLORS.grayText,
+                  border: channelActiveFirst ? `1.5px solid ${COLORS.primaryOrange}` : '1.5px solid transparent',
+                }}
+              >
+                Active First
+              </button>
               </>
             )}
           </nav>
+
+          {/* CR-414 + BUG-555 WP-C: Tablet filter dropdown — mirrors the pills nav (status filters in channel view,
+              channel filters in status view). Visible <1280px only (OD-537-02, OD-414-01=A, OD-414-05=A, OD-555-10). */}
+          <div className="relative xl:hidden ml-2" ref={tabletDropdownRef}> {/* BUG-555 WP-C */}
+            <button
+              data-testid="tablet-filter-dropdown-btn"
+              aria-expanded={tabletDropdownOpen}
+              onClick={() => setTabletDropdownOpen(prev => !prev)}
+              className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-medium transition-colors whitespace-nowrap"
+              style={{ backgroundColor: '#F5F5F5', color: COLORS.darkText }}
+            >
+              <span>{dashboardView === 'status' ? 'Channels' : 'Status'}</span>
+              <span
+                data-testid="tablet-filter-active-count"
+                className="text-xs px-1.5 py-0.5 rounded-full"
+                style={{ backgroundColor: COLORS.borderGray, color: COLORS.grayText }}
+              >
+                {dashboardView === 'status'
+                  ? activeChannels.length
+                  : activeStatuses.length + (tableFilter === 'schedule' ? 1 : 0)}
+              </span>
+              <ChevronDown className="w-3.5 h-3.5" />
+            </button>
+            {tabletDropdownOpen && (
+              <div
+                data-testid="tablet-filter-dropdown-menu"
+                className="absolute left-0 top-full mt-1 bg-white rounded-xl shadow-lg border z-50 min-w-[180px] py-1"
+                style={{ borderColor: COLORS.borderGray }}
+              >
+                {dashboardView === 'status' ? (
+                  visibleChannelFilters.map((channel) => {
+                    const Icon = channel.icon;
+                    const isActive = activeChannels.includes(channel.id);
+                    return (
+                      <button
+                        key={channel.id}
+                        data-testid={`tablet-filter-channel-${channel.id}`}
+                        onClick={() => {
+                          if (isActive) {
+                            const next = activeChannels.filter(c => c !== channel.id);
+                            if (next.length > 0) setActiveChannels(next);
+                          } else {
+                            setActiveChannels([...activeChannels, channel.id]);
+                          }
+                        }}
+                        className="w-full text-left px-3 py-2.5 text-sm flex items-center gap-2.5 hover:bg-slate-50 transition-colors"
+                        style={{ color: isActive ? COLORS.darkText : COLORS.grayText }}
+                      >
+                        <Check className="w-4 h-4 flex-shrink-0" style={{ visibility: isActive ? 'visible' : 'hidden', color: COLORS.primaryOrange }} />
+                        <Icon className="w-4 h-4 flex-shrink-0" />
+                        <span>{channel.fullLabel}</span>
+                      </button>
+                    );
+                  })
+                ) : (
+                  <>
+                    {visibleStatusFilters.map((status) => {
+                      const isActive = activeStatuses.includes(status.id);
+                      return (
+                        <button
+                          key={status.id}
+                          data-testid={`tablet-filter-status-${status.id}`}
+                          onClick={() => handleStatusToggle(status.id)}
+                          className="w-full text-left px-3 py-2.5 text-sm flex items-center gap-2.5 hover:bg-slate-50 transition-colors"
+                          style={{ color: isActive ? COLORS.darkText : COLORS.grayText }}
+                        >
+                          <Check className="w-4 h-4 flex-shrink-0" style={{ visibility: isActive ? 'visible' : 'hidden', color: COLORS.primaryOrange }} />
+                          <span>{status.label}</span>
+                        </button>
+                      );
+                    })}
+                    <button
+                      data-testid="tablet-filter-schedule"
+                      onClick={() => setTableFilter(tableFilter === 'schedule' ? null : 'schedule')}
+                      className="w-full text-left px-3 py-2.5 text-sm flex items-center gap-2.5 hover:bg-slate-50 transition-colors"
+                      style={{ color: tableFilter === 'schedule' ? '#1565C0' : COLORS.grayText }}
+                    >
+                      <Check className="w-4 h-4 flex-shrink-0" style={{ visibility: tableFilter === 'schedule' ? 'visible' : 'hidden', color: '#1565C0' }} />
+                      <span>Schedule</span>
+                    </button>
+                  </>
+                )}
+              </div>
+            )}
+          </div>
         </div>
 
         {/* POS2-002 Phase 3 (May-2026): Platform filter — sits inline after
@@ -323,24 +445,24 @@ const Header = ({
             don't conflate the platform axis with the status axis.
             Cards are NOT modified — this dropdown is the only operator-visible
             affordance for the POS / Web / Scan distinction. */}
-        <div className="flex items-center pl-3 ml-1 border-l" style={{ borderColor: COLORS.borderGray }}>
+        <div className="hidden xl:flex items-center pl-3 ml-1 border-l" style={{ borderColor: COLORS.borderGray }}> {/* CR-414 + BUG-555 WP-C: hidden <1280px */}
           <PlatformDropdown value={platform} onChange={setPlatform} />
         </div>
 
         {/* Center Section - Search (flex-1 to take available space) */}
-        <div className="flex-1 flex justify-end px-4">
+        <div className="flex-1 min-w-0 flex justify-end px-2 xl:px-4"> {/* CR-414 + BUG-555 WP-C: tighter padding <1280px */ /* BUG-565 */}
           {/* POS2-002 Phase 3.1 (May-2026): live counter chip — sits to the
               left of the search box, inside the right-aligned cluster.
               Read-only pulse; respects status / channel / search but
               ignores the Platform dropdown (independence guarantee). */}
-          <div className="flex items-center mr-3">
+          <div className="hidden xl:flex items-center mr-3"> {/* CR-414 + BUG-555 WP-C: hidden <1280px */}
             <PlatformCounterChip webCount={webCount} posCount={posCount} />
           </div>
-          <div className="relative">
+          <div className="relative flex-1 xl:flex-initial min-w-0"> {/* CR-414 + BUG-555 WP-C: search takes remaining row width <1280px */}
             <div 
               ref={searchRef}
-              className={`flex items-center gap-2 px-3 py-2 rounded-lg transition-all ${
-                isSearchFocused ? "w-64" : "w-48"
+              className={`flex items-center gap-2 px-3 py-2 rounded-lg transition-all w-full ${
+                isSearchFocused ? "xl:w-64" : "xl:w-48" /* BUG-555 WP-C */
               }`}
               style={{ 
                 backgroundColor: COLORS.sectionBg,
@@ -356,7 +478,7 @@ const Header = ({
                 onChange={(e) => setSearchQuery(e.target.value)}
                 onFocus={() => setIsSearchFocused(true)}
                 onBlur={() => { if (!searchQuery) setIsSearchFocused(false); }}
-                className="flex-1 bg-transparent text-sm outline-none"
+                className="flex-1 min-w-0 bg-transparent text-sm outline-none"
                 style={{ color: COLORS.darkText }}
               />
               {(searchQuery || isSearchFocused) && (
@@ -378,14 +500,14 @@ const Header = ({
               <div
                 ref={dropdownRef}
                 data-testid="search-dropdown"
-                className="absolute top-full left-1/2 -translate-x-1/2 mt-1 w-96 bg-white rounded-lg shadow-lg border overflow-hidden z-50 max-h-96 overflow-y-auto"
+                className="absolute top-full right-0 xl:right-auto xl:left-1/2 xl:-translate-x-1/2 mt-1 w-80 xl:w-96 bg-white rounded-lg shadow-lg border overflow-hidden z-50 max-h-96 overflow-y-auto" /* CR-414 + BUG-555 WP-C: right-anchored <1280px */
                 style={{ borderColor: COLORS.borderGray }}
               >
                 {/* Tables - Exact Matches */}
                 {searchResults.tables?.exact?.length > 0 && (
                   <div>
                     <div className="px-3 py-2 text-xs font-medium uppercase flex items-center gap-2" style={{ color: COLORS.primaryGreen, backgroundColor: '#f0fdf4' }}>
-                      <span>Exact Match</span>
+                      <span>Table - Exact Match</span> {/* BUG-590: add TABLE prefix — matches ROOM/DELIVERY/TAKEAWAY pattern */}
                     </div>
                     {searchResults.tables.exact.map((item) => (
                       <div
@@ -394,7 +516,7 @@ const Header = ({
                         className="w-full px-3 py-2 flex items-center gap-3 hover:bg-gray-50 transition-colors border-l-2"
                         style={{ borderColor: COLORS.primaryGreen }}
                       >
-                        <span className="font-semibold text-sm" style={{ color: COLORS.primaryOrange }}>{item.id}</span>
+                        <span className="font-semibold text-sm" style={{ color: COLORS.primaryOrange }}>{item.label || item.id}</span> {/* BUG-588: show display label, not DB ID */}
                         <span 
                           className="text-sm flex-1" 
                           style={{ color: item.customer ? COLORS.darkText : COLORS.grayText }}
@@ -414,7 +536,7 @@ const Header = ({
                         <button
                           onClick={() => handleSearchSelect({ type: 'table', data: item })}
                           className="p-1.5 rounded-md hover:bg-gray-100 transition-colors"
-                          style={{ color: COLORS.primaryOrange }}
+                          style={{ color: COLORS.grayText }}
                           title="View Details"
                         >
                           <ChevronRight className="w-4 h-4" />
@@ -436,9 +558,9 @@ const Header = ({
                         data-testid={`search-result-${item.id}`}
                         className="w-full px-3 py-2 flex items-center gap-3 hover:bg-gray-50 transition-colors"
                       >
-                        <span className="font-medium text-sm" style={{ color: COLORS.primaryOrange }}>{item.id}</span>
-                        <span 
-                          className="text-sm flex-1" 
+                        <span className="font-medium text-sm" style={{ color: COLORS.primaryOrange }}>{item.label || item.id}</span> {/* BUG-588: show display label, not DB ID */}
+                        <span
+                          className="text-sm flex-1"
                           style={{ color: item.customer ? COLORS.darkText : COLORS.grayText }}
                         >
                           {getTableDisplayText(item)}
@@ -660,17 +782,18 @@ const Header = ({
         </div>
 
         {/* Right Section - Add Button + Online Status */}
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-3 flex-shrink-0"> {/* BUG-555 WP-C */}
           {/* Add Order Button — Req 2: hidden when Order Taking is OFF */}
           {orderTakingEnabled && (
             <button
               data-testid="add-table-btn"
-              className="flex items-center gap-1.5 px-3 py-2.5 rounded-lg transition-colors hover:opacity-80"
+              className="flex items-center justify-center gap-1.5 px-3 py-2.5 max-sm:min-w-[44px] max-sm:min-h-[44px] rounded-lg transition-colors hover:opacity-80" /* BUG-555 WP-C */
+              aria-label="Add"
               style={{ backgroundColor: COLORS.primaryOrange, color: "white" }}
               onClick={onAddOrder}
             >
               <PlusSquare className="w-4 h-4" />
-              <span className="text-sm font-medium">Add</span>
+              <span className="hidden sm:inline text-sm font-medium">Add</span> {/* BUG-555 WP-C: icon-only <640px */}
             </button>
           )}
 

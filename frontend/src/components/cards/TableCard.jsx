@@ -1,12 +1,14 @@
 import React, { useMemo, useState } from "react";
 import { Printer, Clock, X, Check, PlusSquare, ShoppingBag, Bike, Utensils, DoorOpen, Loader2 } from "lucide-react";
 import PropTypes from 'prop-types';
-import { COLORS, CONFIG } from "../../constants";
+import { COLORS, CONFIG, getStatusColor } from "../../constants"; // CR-433
+import { GENIE_LOGO_URL, SOURCE_COLORS } from "../../constants/colors"; // CR-110: MyGenie badge, BUG-285: source color for label
 import { mockOrderItems } from "../../data";
 import { getTableStatusConfig, isTableActive } from "../../utils";
 import { IconButton, TextButton } from "./buttons";
 import { CARD_BASE_STYLE } from "./TableCard.styles";
 import { printOrder, completePrepaidOrder } from "../../api/services/orderService";
+import { manuallyPrintAggregator } from "../../api/services/aggregatorService"; // CR-118
 import { dispatchOrder } from "../../api/services/deliveryService";
 import AssignRiderModal from "../modals/AssignRiderModal";
 import { useToast } from "../../hooks/use-toast";
@@ -51,11 +53,15 @@ const computeStageTime = (table) => {
 
 // Table Card Component - Simplified (no expansion, uses modal)
 const TableCard = ({ table, onClick, onOpenModal, onUpdateStatus, onBillClick, onConfirmOrder, onCancelOrder, onMarkReady, onMarkServed, isSnoozed, onToggleSnooze, currencySymbol = '₹', isEngaged = false, orderItems = null,
+  // CR-106: Aggregator action handlers
+  onAggregatorReady,
+  onAggregatorDispatch,
   // BUG-029 (Apr-2026): callback invoked after successful prepaid settle so the
   // parent dashboard can clear any stale order-entry selection for this order.
   onPostSettleSuccess,
 }) => {
   const statusConfig = getTableStatusConfig(table.status);
+  const isAggregator = table.order?.isAggregator === true || table.isAggregator === true; // CR-106
   const isActive = isTableActive(table.status);
   const hasOrders = ["occupied", "billReady"].includes(table.status);
   const isYetToConfirm = table.status === "yetToConfirm";
@@ -231,6 +237,23 @@ const TableCard = ({ table, onClick, onOpenModal, onUpdateStatus, onBillClick, o
     }
   };
 
+
+  // CR-118: Aggregator manual print (KOT or Bill)
+  const handleAggregatorPrint = async (e, printType) => {
+    e?.stopPropagation?.();
+    const printId = table.orderId; // BUG-290: internal DB ID — aggrId (e.g.'3H5H9488') casts to int 3 on backend → wrong restaurant prints
+    if (!printId || isActionInProgress) return;
+    const isKot = printType === 'aggr_kot';
+    if (isKot) setIsPrintingKot(true); else setIsPrintingBill(true);
+    try {
+      await manuallyPrintAggregator(printId, printType, table.order?.brandName || table.brandName); // CR-125: pass brandName for print
+    } catch (error) {
+      console.error(`[TableCard] CR-118: Aggregator ${printType} error:`, error);
+    } finally {
+      if (isKot) setIsPrintingKot(false); else setIsPrintingBill(false);
+    }
+  };
+
   // BUG-274: Settle prepaid order (fOrderStatus 5 + paymentType 'prepaid')
   // PROD-BUG-002: Settle is financial closure ONLY — NO printOrder() call here.
   const handleSettlePrepaid = async (e) => {
@@ -256,9 +279,9 @@ const TableCard = ({ table, onClick, onOpenModal, onUpdateStatus, onBillClick, o
   // Border color is neutral gray for all cards (status shown via labels/buttons)
   const cardStyle = useMemo(() => ({
     ...CARD_BASE_STYLE,
-    border: `3px solid #E5E5E5`,
+    border: `2px solid ${getStatusColor(table.fOrderStatus, COLORS.borderGray)}`, // CR-433
     minHeight: CONFIG.CARD_MIN_HEIGHT,
-  }), []);
+  }), [table.fOrderStatus]); // CR-433: react to status changes
 
   const headerPillStyle = useMemo(() => {
     // Neutral header for all order types - no colored backgrounds
@@ -279,7 +302,7 @@ const TableCard = ({ table, onClick, onOpenModal, onUpdateStatus, onBillClick, o
   return (
     <div
       data-testid={`table-card-${table.id}`}
-      onClick={isEngaged ? undefined : handleCardClick}
+      onClick={isEngaged || isAggregator ? undefined : handleCardClick} // CR-106: no-op for aggregator
       className={`relative rounded-2xl transition-all duration-200 ${isEngaged ? 'pointer-events-none' : 'cursor-pointer hover:shadow-md'} ${isSnoozed ? 'opacity-60' : ''}`}
       style={cardStyle}
     >
@@ -297,11 +320,32 @@ const TableCard = ({ table, onClick, onOpenModal, onUpdateStatus, onBillClick, o
           style={headerPillStyle}
         >
           <div className="flex items-center gap-2 min-w-0">
+            {/* CR-106: S/Z source badge for aggregator orders (Swiggy orange / Zomato red) */}
+            {isAggregator && (table.order?.source || table.source) && (table.order?.source || table.source) !== 'own' && (
+              <span
+                data-testid={`source-badge-${table.id}`}
+                className="w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold text-white flex-shrink-0"
+                style={{
+                  backgroundColor: (table.order?.source || table.source)?.toLowerCase() === 'zomato' ? '#E23744' : '#FC8019',
+                }}
+              >
+                {(table.order?.source || table.source)?.toLowerCase() === 'zomato' ? 'Z' : 'S'}
+              </span>
+            )}
+            {/* CR-110: MyGenie mascot badge for own delivery orders */}
+            {!isAggregator && table.orderType === 'delivery' && (
+              <img
+                src={GENIE_LOGO_URL}
+                alt="MyGenie"
+                data-testid={`mygenie-badge-${table.id}`}
+                className="w-5 h-5 flex-shrink-0 object-contain"
+              />
+            )}
             {table.orderType === 'takeAway' && <ShoppingBag className="w-3.5 h-3.5 flex-shrink-0" style={{ color: COLORS.primaryOrange }} />}
-            {table.orderType === 'delivery' && <Bike className="w-3.5 h-3.5 flex-shrink-0" style={{ color: COLORS.primaryOrange }} />}
+            {table.orderType === 'delivery' && !isAggregator && <Bike className="w-3.5 h-3.5 flex-shrink-0" style={{ color: COLORS.primaryOrange }} />}
             {(table.orderType === 'dineIn' || table.orderType === 'walkIn') && <Utensils className="w-3.5 h-3.5 flex-shrink-0" style={{ color: COLORS.primaryOrange }} />}
             {table.orderType === 'room' && <DoorOpen className="w-3.5 h-3.5 flex-shrink-0" style={{ color: COLORS.primaryOrange }} />}
-            <span className="text-sm font-bold truncate" title={table.label || table.id}>{table.label || table.id}</span>
+            <span className="text-sm font-bold truncate" style={{ color: getStatusColor(table.fOrderStatus, COLORS.darkText) }} title={table.label || table.id}>{table.label || table.id}</span> {/* CR-433 */}
           </div>
           {table.status === "reserved" ? (
             <span className="text-xs font-semibold flex-shrink-0" style={{ color: COLORS.primaryOrange }}>Reserved</span>
@@ -318,8 +362,9 @@ const TableCard = ({ table, onClick, onOpenModal, onUpdateStatus, onBillClick, o
                 ? `SCH ${new Date((table.scheduleAt || table.order?.scheduleAt).replace(' ', 'T')).toLocaleString('en-IN', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', hour12: true })}`
                 : 'SCH'}
             </span>
-          ) : table.amount ? (
-            <span className="text-xs font-semibold flex-shrink-0">{currencySymbol}{table.amount.toLocaleString()}</span>
+          ) : (!isAggregator && table.amount) ? (
+            // BUG-292: hide price on aggregator cards — long aggrId truncated by competing flex-shrink-0 amount
+            <span className="text-xs font-semibold flex-shrink-0" style={{ color: getStatusColor(table.fOrderStatus, COLORS.grayText) /* CR-433 */ }}>{currencySymbol}{table.amount.toLocaleString()}</span>
           ) : null}
           
           {/* Snooze Button - Only for web yetToConfirm orders (BUG-122 parity) */}
@@ -338,6 +383,25 @@ const TableCard = ({ table, onClick, onOpenModal, onUpdateStatus, onBillClick, o
             </button>
           )}
         </div>
+
+        {/* CR-125: Brand name strip — shown below header pill for multi-brand aggregator orders.
+            Guards: isAggregator + brandName non-null. Zero effect on POS / single-brand cards. */}
+        {isAggregator && (table.order?.brandName || table.brandName) && (
+          <div
+            className="mt-1.5 px-1 flex items-center"
+            data-testid={`brand-name-strip-${table.id}`}
+          >
+            <span
+              className="text-[10px] font-semibold uppercase tracking-wide px-2 py-0.5 rounded-full"
+              style={{
+                backgroundColor: ((table.order?.source || table.source)?.toLowerCase() === 'zomato' ? '#E23744' : '#FC8019') + '18',
+                color: (table.order?.source || table.source)?.toLowerCase() === 'zomato' ? '#E23744' : '#FC8019',
+              }}
+            >
+              {table.order?.brandName || table.brandName}
+            </span>
+          </div>
+        )}
 
         {/* Available - Add order icon centered + Available label at bottom */}
         {!isActive && (
@@ -369,11 +433,7 @@ const TableCard = ({ table, onClick, onOpenModal, onUpdateStatus, onBillClick, o
                         ? (table.customer || 'NA')
                         : (table.waiter || 'NA')}
                     </span>
-                    {/* Add status label inline - normal weight to match bottom style */}
-                    {table.fOrderStatus === 1 && <span style={{ color: COLORS.primaryOrange }}> • Preparing</span>}
-                    {table.fOrderStatus === 2 && <span style={{ color: COLORS.primaryGreen }}> • Ready</span>}
-                    {table.fOrderStatus === 5 && <span style={{ color: COLORS.primaryGreen }}> • Served</span>}
-                    {table.fOrderStatus === 7 && <span style={{ color: COLORS.amber }}> • Confirming</span>}
+                    {/* BUG-582: status text labels removed — border colour (CR-433) communicates status visually */}
                   </>
                 )}
             </div>
@@ -382,6 +442,8 @@ const TableCard = ({ table, onClick, onOpenModal, onUpdateStatus, onBillClick, o
             <div className="text-xs mt-1 mb-2 whitespace-nowrap overflow-hidden text-ellipsis" style={{ color: COLORS.grayText }}>
               <span>{table.status === "reserved" ? table.reservedTime : computeStageTime(table)}</span>
             </div>
+
+            {/* BUG-256: Reverted BUG-252 aggregator body — owner directive: keep same height as regular cards */}
 
             {/* Action Buttons */}
             {isYetToConfirm ? (
@@ -412,7 +474,63 @@ const TableCard = ({ table, onClick, onOpenModal, onUpdateStatus, onBillClick, o
                  fOrderStatus 2 (ready)     → KOT button + Serve button
                  fOrderStatus 5 (served)    → KOT button + Bill button */
               <div className="flex gap-2">
-                {table.fOrderStatus === 1 && (
+                {/* CR-106: Aggregator-specific action buttons */}
+                {isAggregator && table.fOrderStatus === 1 && (
+                  <>
+                    {/* CR-118: KOT print for aggregator */}
+                    <IconButton
+                      icon={Printer}
+                      onClick={(e) => handleAggregatorPrint(e, 'aggr_kot')}
+                      backgroundColor={COLORS.borderGray}
+                      testId={`agg-kot-btn-${table.id}`}
+                      title="Print KOT"
+                      ariaLabel={`Print aggregator KOT`}
+                      disabled={isActionInProgress}
+                      isLoading={isPrintingKot}
+                      LoadingIcon={Loader2}
+                    />
+                    <TextButton
+                      onClick={(e) => { e?.stopPropagation?.(); onAggregatorReady?.(table.order || table); }}
+                      backgroundColor="#FFF3E8"
+                      textColor={COLORS.primaryOrange}
+                      borderColor={COLORS.primaryOrange}
+                      testId={`agg-ready-btn-${table.id}`}
+                      ariaLabel={`Mark aggregator order ready`}
+                      fullWidth={false}
+                      className="flex-1 text-xs py-2 flex items-center justify-center gap-1"
+                    >
+                      Ready
+                    </TextButton>
+                  </>
+                )}
+                {/* BUG-285 + CR-120: fOS=2 — Bill button replaces KOT; "Ready to Dispatch" becomes status label */}
+                {isAggregator && table.fOrderStatus === 2 && (
+                  <>
+                    {/* CR-120: Bill print at Ready (replaces KOT reprint) */}
+                    <IconButton
+                      icon={Printer}
+                      onClick={(e) => handleAggregatorPrint(e, 'aggr_bill')}
+                      backgroundColor="#E8F5E9"
+                      textColor={COLORS.primaryGreen}
+                      testId={`agg-bill-btn-${table.id}`}
+                      title="Print Bill"
+                      ariaLabel={`Print aggregator Bill`}
+                      disabled={isActionInProgress}
+                      isLoading={isPrintingBill}
+                      LoadingIcon={Loader2}
+                    />
+                    {/* BUG-285: Status label, not button */}
+                    <span
+                      className="flex-1 text-xs py-2 flex items-center justify-center gap-1 font-bold rounded-lg"
+                      style={{ backgroundColor: `${SOURCE_COLORS[table.order?.source] || COLORS.primaryOrange}10`, color: SOURCE_COLORS[table.order?.source] || COLORS.primaryOrange }}
+                      data-testid={`agg-dispatch-label-${table.id}`}
+                    >
+                      Ready to Dispatch
+                    </span>
+                  </>
+                )}
+                {/* POS actions — hidden for aggregator (CR-106) */}
+                {!isAggregator && table.fOrderStatus === 1 && (
                   <>
                     <IconButton
                       icon={Printer}
@@ -440,7 +558,7 @@ const TableCard = ({ table, onClick, onOpenModal, onUpdateStatus, onBillClick, o
                     </TextButton>
                   </>
                 )}
-                {table.fOrderStatus === 2 && (
+                {!isAggregator && table.fOrderStatus === 2 && (
                   <>
                     {/* BUG-097: Hide KOT for delivery orders at dispatch/assign/reassign state */}
                     {!isDelivery && (
@@ -478,20 +596,21 @@ const TableCard = ({ table, onClick, onOpenModal, onUpdateStatus, onBillClick, o
                         </TextButton>
                       ) : (
                         // BUG-097 (2026-05-21): branch on rider acceptance state.
-                        // - riderStatus === 'riderAssigned' → disabled "Waiting.." (pending accept)
+                        // - riderStatus === 'riderAssigned' → waiting (pending accept) — BUG-370: now clickable to allow reassign
                         // - any other state (e.g. 'dispatched' = rider picked up) → clickable "Reassign"
                         table.order?.riderStatus === 'riderAssigned' ? (
                           <TextButton
+                            onClick={(e) => { e?.stopPropagation?.(); setShowAssignRider(true); }}
                             backgroundColor="#FFF3E8"
                             textColor={COLORS.primaryOrange}
                             borderColor={COLORS.primaryOrange}
                             testId={`waiting-rider-btn-${table.id}`}
-                            ariaLabel={`Waiting for rider for table ${table.id}`}
+                            ariaLabel={`Reassign rider for table ${table.id}`}
                             fullWidth={false}
-                            className="flex-1 text-xs py-2 flex items-center justify-center gap-1 opacity-50 cursor-default"
-                            disabled
+                            className="flex-1 text-xs py-2 flex items-center justify-center gap-1"
+                            disabled={isActionInProgress}
                           >
-                            Waiting..
+                            Reassign
                           </TextButton>
                         ) : (
                           <TextButton
@@ -527,7 +646,7 @@ const TableCard = ({ table, onClick, onOpenModal, onUpdateStatus, onBillClick, o
                     )}
                   </>
                 )}
-                {table.fOrderStatus === 5 && (
+                {!isAggregator && table.fOrderStatus === 5 && (
                   <>
                     {/* BUG-097: Hide KOT for delivery orders at delivered state */}
                     {!isDelivery && (
@@ -543,10 +662,33 @@ const TableCard = ({ table, onClick, onOpenModal, onUpdateStatus, onBillClick, o
                       LoadingIcon={Loader2}
                     />
                     )}
+                    {/* BUG-557: delivery at fOS=5, no rider assigned yet — show Assign/Dispatch first.
+                        Mirrors OrderCard.jsx L1203-1229 and the existing fOS=2 Assign pattern (L581).
+                        Fires when Default Order Status = "Bill" skips fOS=2, sending delivery orders
+                        directly to fOS=5 without a rider assignment window. */}
+                    {isDelivery && !hasRiderAssigned && (
+                      <TextButton
+                        onClick={deliveryAssign
+                          ? (e) => { e?.stopPropagation?.(); setShowAssignRider(true); }
+                          : handleDispatch}
+                        backgroundColor="#FFF3E8"
+                        textColor={COLORS.primaryOrange}
+                        borderColor={COLORS.primaryOrange}
+                        testId={deliveryAssign ? `assign-rider-btn-${table.id}` : `dispatch-btn-${table.id}`}
+                        ariaLabel={deliveryAssign ? `Assign rider for table ${table.id}` : `Dispatch order for table ${table.id}`}
+                        fullWidth={false}
+                        className="flex-1 text-xs py-2 flex items-center justify-center gap-1"
+                        disabled={isActionInProgress}
+                      >
+                        {isDispatching ? <Loader2 className="w-4 h-4 animate-spin" />
+                          : (deliveryAssign ? 'Assign' : 'Dispatch')}
+                      </TextButton>
+                    )}
                     {/* BUG-097 (2026-05-21): delivery + rider picked up (riderStatus='dispatched')
                         ⇒ passive "On the way.." label; no Bill/Settle until handover.
                         Short label mirrors the fOS=2 "Waiting.." pattern for tile width. */}
-                    {isDelivery && table.order?.riderStatus === 'dispatched' ? (
+                    {/* BUG-557: gate Bill/Settle behind rider assignment for delivery */}
+                    {(!isDelivery || hasRiderAssigned) && (isDelivery && table.order?.riderStatus === 'dispatched' ? (
                       <TextButton
                         backgroundColor="#FFF3E8"
                         textColor={COLORS.primaryOrange}
@@ -560,8 +702,8 @@ const TableCard = ({ table, onClick, onOpenModal, onUpdateStatus, onBillClick, o
                         On the way..
                       </TextButton>
                     ) : table.paymentType === 'prepaid' ? (
-                      // PROD-BUG-001: hide Settle when auto-settle is ON + non-PayLater
-                      (table.paymentMethod?.toLowerCase() === 'paylater' || !(() => { try { return localStorage.getItem('mygenie_auto_settle_enabled') === 'true'; } catch(_) { return false; } })()) && (
+                      // BUG-273: auto-settle localStorage condition removed — Settle button always visible
+                      (
                       <TextButton
                         onClick={handleSettlePrepaid}
                         testId={`settle-btn-${table.id}`}
@@ -584,7 +726,7 @@ const TableCard = ({ table, onClick, onOpenModal, onUpdateStatus, onBillClick, o
                       >
                         {isPrintingBill ? <Loader2 className="w-4 h-4 animate-spin" /> : (table.isRoom ? 'C/Out' : 'Bill')}
                       </TextButton>
-                    )}
+                    ))}
                   </>
                 )}
               </div>

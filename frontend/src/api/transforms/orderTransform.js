@@ -1,12 +1,13 @@
 // Order Transform - Maps raw API order data to canonical frontend schema
 
 import { F_ORDER_STATUS, ORDER_TO_TABLE_STATUS, ORDER_TYPES } from '../constants';
-import { selectAgentsForKot, cartStationsToSet } from './printerAgentSelector';
+import { selectAgentsForKot, selectAgentsForBill, cartStationsToSet } from './printerAgentSelector'; // CR-130
 // BUG-108 P1 (May-2026): Feature flags + payload-safety guard. When a flag is
 // `false`, the corresponding fields are emitted as 0/'' so no mock value can
 // reach PLACE_ORDER / BILL_PAYMENT / print payloads. See
 // `POS3_0_BUG_108_P1_BUG_099_HOTSPOT_CHECK_AND_CR_PLAYBOOK_HANDOFF_2026_05_22.md`.
 import { BUG108_FLAGS } from '../../utils/BUG108_FLAGS';
+import { applyGrandTotalRoundOff } from '../../utils/roundOffUtils'; // CR-170
 
 /**
  * Compute elapsed time string from a date
@@ -115,6 +116,7 @@ export const fromAPI = {
       foodId: foodDetails.id || null,       // food catalog ID — needed for full cancel item_id
       categoryId: foodDetails.category_id || null, // BUG-108 V2 (2026-05-25): category ID for item/category coupon matching
       name: foodDetails.name || 'Unknown Item',
+      itemCode: foodDetails.item_code || '',               // CR-098: short code for OrderCard display
       // Tax from food_details — used for billing calculations
       tax: {
         percentage: parseFloat(foodDetails.tax) || 0,
@@ -194,6 +196,7 @@ export const fromAPI = {
     return {
       orderId: api.id,
       orderNumber: api.restaurant_order_id || '',
+      dailyToken: api.daily_token || null, // BUG-144: daily reset token from backend
       orderType,
       rawOrderType: api.order_type,
       orderIn: api.order_in,
@@ -229,9 +232,21 @@ export const fromAPI = {
       // with `discount_value` as legacy fallback). Missing field → 0 (no
       // regression vs current behavior).
       discount: parseFloat(api.restaurant_discount_amount || api.discount_value || 0) || 0,
+      // BUG-538: role-base discount applied by authorized user before collection.
+      // 'fixed'→'flat' maps API type to CPP internal type. null when absent → no-op for all restaurants today.
+      orderDiscountJson: api.order_discount_json
+        ? {
+            discount:     parseFloat(api.order_discount_json.discount) || 0,
+            discountType: api.order_discount_json.discount_type === 'fixed' ? 'flat' : (api.order_discount_json.discount_type || 'percent'),
+            discountNote: api.order_discount_json.discount_note || '',
+          }
+        : null,
       paymentStatus: api.payment_status || 'unpaid',
       paymentType: api.payment_type || '',
       paymentMethod: api.payment_method || api.payment_mode || '',
+      // CR-165: Razorpay PG detection — confirmed in running orders schema 2026-08-24
+      razorpayOrderId:       api.razorpay_order_id       || null,
+      razorpayPaymentStatus: api.razorpay_payment_status || null,
 
       // POS2-002 Phase 1 (May-2026): origin axis for downstream phases —
       //   • Phase 2 web-delivery-lock predicate (CollectPaymentPanel.jsx)
@@ -397,12 +412,14 @@ export const fromAPI = {
         paymentStatus:      api.room_info.payment_status || null,
         balancePaymentMode: api.room_info.balance_payment_mode || null,
         roomNo:             api.room_info.room_no || null,
-        // BE-2 §4.1 (still pending backend) — keep null fallbacks until BE
-        // ships explicit discount fields. Until then, `discount` is derived
-        // in RoomRowCard.numbers as (room_price - lodging_collected) on
-        // settled rooms.
-        discountAmount:     parseFloat(api.room_info.discount_amount) || 0,
-        discountReason:     api.room_info.discount_reason || null,
+        // BUG-401: gst_tax lives at room_info top-level (NOT inside room_payment_summary).
+        // Previous code read from roomPaymentSummary.gstTax which was always 0 when
+        // room_payment_summary was absent. Read directly from api.room_info.gst_tax here.
+        gstTax:             parseFloat(api.room_info.gst_tax) || 0,
+        // BUG-487: backend ships room_discount_amount / room_discount_reason (not discount_amount/discount_reason).
+        // "still pending backend" note is now stale — fields confirmed shipped 2026-10-05.
+        discountAmount:      parseFloat(api.room_info.room_discount_amount) || 0,
+        discountReason:      api.room_info.room_discount_reason || null,
         checkInDate:    api.room_info.checkin_date  || null,
         checkOutDate:   api.room_info.checkout_date || null,
         bookingType:    api.room_info.booking_details?.booking_type || api.room_info.booking_type || null,
@@ -416,7 +433,34 @@ export const fromAPI = {
           if (bt) return bt;
           return null;
         })(),
+        // CR-162: mid-stay payment ledger — present only when ledger payments exist, null otherwise.
+        // remaining_room_balance = LIVE outstanding balance (updates on every room-payment call).
+        // Use: roomPaymentSummary?.remainingRoomBalance ?? balancePayment for live-safe reads.
+        roomPaymentSummary: api.room_info.room_payment_summary ? {
+          remainingRoomBalance: parseFloat(api.room_info.room_payment_summary.remaining_room_balance) || 0,
+          ledgerPaidAmount:     parseFloat(api.room_info.room_payment_summary.ledger_paid_amount)     || 0,
+          legacyAdvancePayment: parseFloat(api.room_info.room_payment_summary.legacy_advance_payment) || 0,
+          gstTax:               parseFloat(api.room_info.room_payment_summary.gst_tax) || 0, // BUG-386
+          payments: (api.room_info.room_payment_summary.payments || []).map(p => ({
+            id:            p.id,
+            amount:        parseFloat(p.payment_amount) || 0,
+            mode:          p.payment_mode || '',
+            type:          p.payment_type || 'advance',
+            note:          p.payment_note || '',
+            transactionId: p.transaction_id || '',
+            paidAt:        p.paid_at || '',
+          })),
+        } : null,
       } : null,
+
+      // CR-409: pre-loaded coupon fields from scan & order / re-engaged orders.
+      // Source: employee-orders-list + scan-new-order socket payload.
+      // Not available on get-single-order-new (OD-409-02 = B — accepted).
+      couponCode:     api.coupon_code     || '',
+      couponDiscount: parseFloat(api.coupon_discount) || 0,
+      couponTitle:    api.coupon_title    || '',
+      couponType:     api.coupon_type     || 'order',
+      loyaltyRedeemed: api.loyalty_info?.redeemed === true, // CR-412: pre-tick loyalty when scan & order redeemed (OD-INV-02=B)
 
       // Raw orderDetails preserved for bill printing (order-temp-store API)
       rawOrderDetails: api.orderDetails || [],
@@ -577,6 +621,27 @@ function _distributeProportional(lines, cappedDiscount, discountableTotal) {
 /**
  * Build a single cart item for the API payload
  * Maps frontend cart item → backend cart[] item shape
+/**
+ * BUG-298 / BUG-299: expand partial-comp items into 2 cart lines before buildCartItem.
+ * IF item.compQty > 0 AND compQty < item.qty: emits [comp-line, normal-line].
+ * Full comp (compQty >= qty) and no-comp (compQty=0) pass through unchanged.
+ * Result: backend sees 2 valid lines; existing isComplementaryRuntime logic handles each.
+ */
+function expandCompItems(items) {
+  return items.flatMap(item => {
+    const cq = item.compQty || 0;
+    const qty = item.qty || 1;
+    if (cq > 0 && cq < qty) {
+      return [
+        { ...item, qty: cq,       isComplementaryRuntime: true,  compQty: 0 },
+        { ...item, qty: qty - cq, isComplementaryRuntime: false, compQty: 0 },
+      ];
+    }
+    return [item];
+  });
+}
+
+/**
  * @param {Object} item - Frontend cart item (from addToCart or addCustomizedItemToCart)
  * @returns {Object} - API cart item
  */
@@ -720,8 +785,10 @@ const buildCartItem = (item) => {
           ? (parseFloat(item.complementaryPrice) || parseFloat(item.price) || 0)
           : 0.0),
     is_complementary:    isRuntimeComp ? 'Yes' : 'No',
+    complementary_reason: isRuntimeComp ? (item.compReason || '') : '', // CR-104: cashier-entered reason, empty for catalog-comp
     food_level_notes:    Array.isArray(item.itemNotes) ? item.itemNotes.map(n => n.label).join(', ') : (item.notes || ''),
     _fullUnitPrice:      fullUnitPrice,
+    _giveDiscount:       item.giveDiscount !== false, // BUG-305: private marker for calcOrderTotals GST split
   };
 };
 
@@ -760,6 +827,7 @@ const calcOrderTotals = (cart, serviceChargePercentage = 0, extras = {}) => {
   let subtotal = 0;
   let gstTax = 0;
   let vatTax = 0;
+  let discountableSubtotal = 0, discountableGst = 0, discountableVat = 0; // BUG-305
 
   cart.forEach(item => {
     // BUG-018 Part 2 (Apr-2026): exclude runtime-marked complimentary lines from
@@ -769,9 +837,16 @@ const calcOrderTotals = (cart, serviceChargePercentage = 0, extras = {}) => {
     if (item.is_complementary === 'Yes') return;
     // CR-010: item.quantity may be decimal for weight-based items — do not parseInt/floor
     const lineTotal = (item._fullUnitPrice || item.price || 0) * (item.quantity || 1);
+    const itemGst = parseFloat(item.gst_amount) || 0; // BUG-305
+    const itemVat = parseFloat(item.vat_amount) || 0; // BUG-305
     subtotal += lineTotal;
-    gstTax += parseFloat(item.gst_amount) || 0;
-    vatTax += parseFloat(item.vat_amount) || 0;
+    gstTax   += itemGst;
+    vatTax   += itemVat;
+    if (item._giveDiscount !== false) { // BUG-305: marker from buildCartItem
+      discountableSubtotal += lineTotal;
+      discountableGst      += itemGst;
+      discountableVat      += itemVat;
+    }
   });
 
   subtotal = Math.round(subtotal * 100) / 100;
@@ -797,7 +872,8 @@ const calcOrderTotals = (cart, serviceChargePercentage = 0, extras = {}) => {
   //   Tip rides SC rate (frozen rule §1 row 9): if SC rate = 0 → tip GST = 0.
   //   Pre-CR-013 (`avgGstRate`-based) was buggy on mixed-GST carts and ignored
   //   configured rates entirely.
-  const discountRatio = subtotal > 0 ? discountAmount / subtotal : 0;
+  // BUG-305: use discountableSubtotal as denominator; non-discountable items' GST/VAT unchanged
+  const discountableRatio = discountableSubtotal > 0 ? discountAmount / discountableSubtotal : 0;
   const scTaxRate     = (serviceChargeTaxPct  || 0) / 100;
   const delTaxRate    = (deliveryChargeGstPct || 0) / 100;
 
@@ -811,11 +887,15 @@ const calcOrderTotals = (cart, serviceChargePercentage = 0, extras = {}) => {
   const scGstAmt    = serviceCharge  * scTaxRate;
   const tipGstAmt   = tipAmount      * scTaxRate;
   const delGstAmt   = deliveryCharge * delTaxRate;
-  const itemGstPostDiscount = gstTax * (1 - discountRatio);
+  // BUG-305: only discountable items' GST reduced; non-discountable portion unchanged
+  const itemGstPostDiscount =
+    discountableGst * (1 - discountableRatio) + (gstTax - discountableGst);
 
   // BUG-054: VAT proration mirrors GST (frozen TAX-003). Previously only GST
   // was prorated by discount; VAT was left at the pre-discount amount.
-  const vatTaxPostDiscount = vatTax * (1 - discountRatio);
+  // BUG-305: same split for VAT (mirrors GST fix above)
+  const vatTaxPostDiscount =
+    discountableVat * (1 - discountableRatio) + (vatTax - discountableVat);
 
   gstTax = itemGstPostDiscount + scGstAmt + tipGstAmt + delGstAmt;
 
@@ -828,11 +908,10 @@ const calcOrderTotals = (cart, serviceChargePercentage = 0, extras = {}) => {
   // ROUND-002: round-off applies ONLY to Grand Total; component values keep
   // 2-decimal precision. Owner directive 2026-05-05.
   const rawTotal = postDiscount + serviceCharge + tipAmount + deliveryCharge + totalTax;
-  const orderAmount = rawTotal > 0
-    ? (roundOffEnabled ? Math.ceil(rawTotal) : Math.round(rawTotal * 100) / 100)
-    : 0;
+  // CR-170: conditional round-off (< 10 paise → floor, ≥ 10 paise → ceil)
+  const orderAmount = applyGrandTotalRoundOff(rawTotal, roundOffEnabled);
   const roundUp = Math.round((orderAmount - rawTotal) * 100) / 100;
-  const roundUpAbs = roundUp > 0 ? roundUp : 0;
+  const roundUpAbs = roundUp; // CR-170: allow negative (floor case sends −₹x)
 
   return {
     order_sub_total_amount:      subtotal,            // Item Total: items-only, pre-discount/SC/tip/delivery/tax
@@ -881,6 +960,8 @@ const buildDeliveryAddress = (addr) => {
     floor:                 addr.floor || null,
     road:                  addr.road  || null,
     house:                 addr.house || null,
+    city:                  addr.city  || '',   // BUG-395 addendum: city/state absent from delivery_address sent to backend — fallback path (order.deliveryAddress) always empty without this
+    state:                 addr.state || '',   // BUG-395 addendum
     location: {
       latitude:  Number.isFinite(lat) ? lat : null,
       longitude: Number.isFinite(lng) ? lng : null,
@@ -951,13 +1032,14 @@ export const toAPI = {
    * @param {number} categoryId - Category ID from MenuContext
    * @param {number} price      - Custom price
    */
-  addCustomItem: (name, categoryId, price) => ({
+  // CR-348: tax + tax_calc wired to user input (was hardcoded 0/Exclusive)
+  addCustomItem: (name, categoryId, price, taxPercent = 0, taxCalc = 'Exclusive') => ({
     name,
     category_id: categoryId,
     price,
-    tax:      0,
+    tax:      Number(taxPercent) || 0,
     tax_type: 'GST',
-    tax_calc: 'Exclusive',
+    tax_calc: taxCalc,
   }),
 
   // ==========================================================================
@@ -969,7 +1051,7 @@ export const toAPI = {
     const { restaurantId, orderNotes = [], printAllKOT = true, userId = '', addressId = null, deliveryAddress = null, serviceChargePercentage = 0, deliveryCharge = 0, serviceChargeTaxPct = 0, deliveryChargeGstPct = 0, printerAgents = [], roundOffEnabled = true, scheduled = false, scheduleAt = null } = options;
 
     const unplacedItems = cartItems.filter(i => !i.placed && i.status !== 'cancelled');
-    const cart = unplacedItems.map(buildCartItem).map(({ _fullUnitPrice, ...item }) => item);
+    const cart = expandCompItems(unplacedItems).map(buildCartItem).map(({ _fullUnitPrice, ...item }) => item); // BUG-298/299
     // CR-008 / Bucket D1-Cap follow-up (May-2026, delivery-charge in totals):
     // Pass deliveryCharge into calcOrderTotals so order_amount, tax_amount, and
     // round_up include the delivery component. Backend echoes order_amount back
@@ -977,7 +1059,7 @@ export const toAPI = {
     // total. Gated to delivery orders only to prevent stray state bleeding into
     // non-delivery payloads (defense-in-depth; OrderEntry already gates on entry).
     // CR-013 (May-2026): plumb component-specific GST rate pcts into calcOrderTotals.
-    const totals = calcOrderTotals(unplacedItems.map(buildCartItem), serviceChargePercentage, {
+    const totals = calcOrderTotals(expandCompItems(unplacedItems).map(buildCartItem), serviceChargePercentage, {
       deliveryCharge: orderType === 'delivery' ? (Number(deliveryCharge) || 0) : 0,
       serviceChargeTaxPct,
       deliveryChargeGstPct,
@@ -985,10 +1067,12 @@ export const toAPI = {
     });
 
     // CR-POS2-003 (May-2026): KOT-station printer agents only when print_kot:'Yes'.
-    // R-OWNER-9 / R-OWNER-10. BILL is excluded by selectAgentsForKot.
-    const printerAgentForPlace = printAllKOT
+    // R-OWNER-9 / R-OWNER-10 amended by CR-130: BILL now appended unconditionally.
+    // OD-3 (2026-08-06): always include BILL — backend gates printing via billing_auto_bill_print.
+    const printerAgentForKot = printAllKOT
       ? selectAgentsForKot(printerAgents, cartStationsToSet(unplacedItems))
       : [];
+    const printerAgentForPlace = [...printerAgentForKot, ...selectAgentsForBill(printerAgents)]; // CR-130
 
     const payload = {
       user_id:                    userId,
@@ -1024,6 +1108,7 @@ export const toAPI = {
       // Discount
       discount_type:              null,
       self_discount:              0,
+      discount_for:               null,                   // CR-137: always null on placement — no discount applied pre-payment
       // BUG-108 V1B (2026-05-25, E-11): coupon_code parity field — Flow 1 never
       // carries a coupon (unpaid placement), but the field is emitted so POS BE
       // schema is uniform across all 4 commit flows.
@@ -1127,6 +1212,8 @@ export const toAPI = {
       order_id:                   String(table.orderId),
       order_type:                 mapOrderTypeToAPI(orderType),
       cust_name:                  customer?.name || '',
+      cust_mobile:                customer?.phone || '',           // BUG-270: was missing from update-place-order
+      cust_membership_id:         customer?.id || '',              // BUG-270: was missing from update-place-order
       order_note:                 orderNotes.map(n => n.label).join(', '),
       payment_method:             'pending',
       payment_status:             'unpaid',
@@ -1145,6 +1232,7 @@ export const toAPI = {
       // Discount
       discount_type:              null,
       self_discount:              0,
+      discount_for:               null,                   // CR-137: always null on update path — owner OQ-1 confirmed
       // BUG-108 V1B (2026-05-25, E-12): coupon_code parity field — Flow 2 never
       // carries a coupon (item-add only), but the field is emitted so POS BE
       // schema is uniform across all 4 commit flows.
@@ -1200,7 +1288,7 @@ export const toAPI = {
 
     const unplacedItems = cartItems.filter(i => !i.placed && i.status !== 'cancelled');
     // CR-028: Build cart items then inject per-item discount_amount
-    const builtItems = unplacedItems.map(buildCartItem);
+    const builtItems = expandCompItems(unplacedItems).map(buildCartItem); // BUG-298/299
     const itemDiscounts = distributeItemDiscounts(builtItems, unplacedItems, parseFloat(discounts.total || 0), {
       couponDiscount: discounts.couponDiscount || 0,
       couponType: discounts.couponType || '',
@@ -1245,10 +1333,12 @@ export const toAPI = {
     const finalTotal = paymentData.finalTotal || totals.order_amount || 0;
 
     // CR-POS2-003 (May-2026): KOT-station printer agents only when print_kot:'Yes'.
-    // R-OWNER-9 / R-OWNER-10. BILL is excluded by selectAgentsForKot.
-    const printerAgentForPlace = printAllKOT
+    // R-OWNER-9 / R-OWNER-10 amended by CR-130: BILL now appended unconditionally.
+    // OD-3 (2026-08-06): always include BILL — billing_auto_bill_print already gates actual print.
+    const printerAgentForKot = printAllKOT
       ? selectAgentsForKot(printerAgents, cartStationsToSet(unplacedItems))
       : [];
+    const printerAgentForPlace = [...printerAgentForKot, ...selectAgentsForBill(printerAgents)]; // CR-130
 
     // Build partial_payments — always include all 3 modes
     let partialPayments;
@@ -1321,6 +1411,7 @@ export const toAPI = {
       // BUG-108 V1B (2026-05-25, E-13/E-14): Flow 3 coupon fields.
       // V1 closure (2026-05-25): couponLive ternaries removed — fields unconditional.
       self_discount:              (discounts.manual || 0) + (discounts.preset || 0),
+      discount_for:               discounts.discountFor || null,  // CR-137
       coupon_code:                discounts.couponCode || '',
       coupon_discount:            discounts.couponDiscount || 0,
       coupon_title:               discounts.couponTitle || '',
@@ -1420,9 +1511,19 @@ export const toAPI = {
       // drawer re-collect (CollectBillPanelDrawer) + legacy test fixtures
       // that did not pass the key.
       roundOff = 0,
+      // BUG-281: B2B GST fields forwarded to backend settlement + auto-bill print
+      custGST     = '',
+      custGSTName = '',
     } = paymentData;
 
     const gstTax = Math.round((sgst + cgst) * 100) / 100;
+
+    // BUG-484: handover_5 §2 — payment_amount / grant_amount / order_amount must be
+    // F&B-only on room stays. `roomBalance` (passed via CollectPaymentPanel L1115) is
+    // the room-rent carve-out. Non-room orders: roomBalance===0 → fbOnlyTotal===finalTotal
+    // (byte-identical to pre-fix behavior for all non-room flows).
+    const fbOnlyTotal = Math.max(0, (finalTotal || 0) - (roomBalance || 0));
+
 
     // BUG-252: Detect TAB payment (can arrive as 'credit' internal ID or 'tab'/'TAB' API name)
     const isTab = method === 'credit' || (typeof method === 'string' && method.toLowerCase() === 'tab');
@@ -1440,7 +1541,7 @@ export const toAPI = {
     // preserves pre-fix behavior (transform used to strip the marker upstream).
     const placedSourceItems = (cartItems || [])
       .filter(item => item.placed && item.status !== 'cancelled' && !item.isCheckInMarker);
-    const food_detail_raw = placedSourceItems
+    const food_detail_raw = expandCompItems(placedSourceItems) // BUG-298/299: split partial-comp items into 2 lines
       .map(item => {
         const unitPrice = item.unitPrice || item.price || 0;
         const qty = item.qty || 1;
@@ -1487,7 +1588,8 @@ export const toAPI = {
           quantity:           qty,
           item_id:            item.id,
           unit_price:         unitPrice,
-          is_complementary:   isRuntimeComp ? 'Yes' : 'No',
+          is_complementary:    isRuntimeComp ? 'Yes' : 'No',
+          complementary_reason: isRuntimeComp ? (item.compReason || '') : '', // CR-104
           food_amount:        isRuntimeComp ? 0 : (unitPrice * qty),
           variation_amount:   isRuntimeComp ? 0 : variationAmount * qty, // BUG-VQTY fix
           addon_amount:       isRuntimeComp ? 0 : addonAmount * qty, // BUG-166 fix
@@ -1548,7 +1650,7 @@ export const toAPI = {
       // sends 'postpaid' so backend treats prepaid-hold orders as postpaid).
       ...(paymentType ? { payment_type: paymentType } : {}),
       payment_mode:                 splitPayments?.length > 0 ? 'partial' : method,
-      payment_amount:               finalTotal || 0,
+      payment_amount:               fbOnlyTotal,   // BUG-484: F&B-only (room rent collected via paid_room)
       payment_status:               isPayLater ? 'sucess' : (isTab ? 'success' : 'paid'),
       transaction_id:               transactionId || '',
       billing_auto_bill_print:      autoBill ? 'Yes' : 'No',
@@ -1564,21 +1666,21 @@ export const toAPI = {
       total_gst_tax_amount:         gstTax,
       gst_tax:                      gstTax,
       vat_tax:                      vatAmount || 0,
-      grant_amount:                 finalTotal || 0,
+      grant_amount:                 fbOnlyTotal,   // BUG-484: F&B-only
       // ROOM_CHECKIN_GAP3 (Stage 2, revised 2026-04-25): `order_amount` carries
       // the full payable amount (food + associated + room balance) for room
       // orders with a pending room balance. User-confirmed field name on
       // 2026-04-25 (replaces earlier `grand_total` candidate). Emitted only
       // when roomBalance > 0 to keep non-room flows byte-identical to
       // pre-Stage-2 payloads.
-      ...(roomBalance > 0 ? { order_amount: finalTotal || 0 } : {}),
+      ...(roomBalance > 0 ? { order_amount: fbOnlyTotal } : {}),  // BUG-484: F&B-only
       // CR-029 G1 (Gate 3, 2026-06-12): real food-only round-off ₹ — replaces
       // the hardcoded 0 that was masking BILL_PAYMENT round-off persistence.
       // Q-BE-1 confirmed NUMERIC type on BILL_PAYMENT (live screenshot of
       // order #939848). PLACE_ORDER (calcOrderTotals:844) continues to emit
       // String(toFixed(2)) per its existing contract — cross-flow type
       // unification OUT of CR-029 scope. Math.max(0,…) mirrors L835 clamp.
-      round_up:                     Math.max(0, Math.round((parseFloat(roundOff) || 0) * 100) / 100),
+      round_up:                     Math.round((parseFloat(roundOff) || 0) * 100) / 100, // CR-170: allow negative
       // Tax & Tip
       service_tax:                  serviceCharge || 0,
       // CR-013 Phase 1.5 D-GST-3 (May-2026): real SC GST + Tip GST values
@@ -1593,6 +1695,7 @@ export const toAPI = {
       ...(paymentData.deliveryGstAmount > 0 ? { delivery_charge_gst_amount: Math.round(paymentData.deliveryGstAmount * 100) / 100 } : {}),
       // BUG-138: self_discount = manual + preset only (old POS parity). Coupon/loyalty/wallet have own fields.
       self_discount:                (discounts.manual || 0) + (discounts.preset || 0),
+      discount_for:                 discounts.discountFor || null,  // CR-137
       coupon_code:                  discounts.couponCode || '',
       coupon_discount:              discounts.couponDiscount || 0,
       coupon_title:                 discounts.couponTitle || '',
@@ -1631,9 +1734,18 @@ export const toAPI = {
       // Room & Misc  // BUG-ROOM-PAIDROOM fix
       paid_room:                    table?.isRoom ? 'yes' : '',
       usage_id:                     '',
+      // BUG-280: CRM customer identity fields (mirrors placeOrder L1000–1005 + updateOrder L1131–1133)
+      // NOTE: cust_email intentionally omitted — legacy '' preserved per owner OD-BUG280-1.
+      cust_name:          customer?.name  || '',
+      cust_mobile:        customer?.phone || '',
+      cust_membership_id: customer?.id    || '',
       // TAB-specific fields (BUG-252: customer info for credit tracking)
-      name:                         tabContact?.name || '',
+      name:                         tabContact?.name  || '',
       mobile:                       tabContact?.phone || '',
+      crm_customer_id:              tabContact?.crmId || '', // BUG-183: links TAB record to CRM profile
+      // BUG-281: B2B GST — forwarded for backend auto-bill print
+      custGST,
+      custGSTName,
     };
 
     // Partial payments — CR-021 B1: gate on splitPayments length only
@@ -1656,35 +1768,16 @@ export const toAPI = {
    * @param {Object} paymentData - { method, finalTotal, sgst, cgst, vatAmount, tip, discounts }
    * @param {number|string} roomId - Destination room ID
    */
-  transferToRoom: (table, paymentData, roomId) => {
-    const {
-      method = 'cash', finalTotal = 0,
-      sgst = 0, cgst = 0, vatAmount = 0,
-      tip = 0, discounts = {}, serviceCharge = 0,
-      // CR-013 Phase 1.5 D-GST-3 (May-2026): SC GST + Tip GST ₹.
-      serviceGstTaxAmount = 0,
-      tipTaxAmount = 0,
-    } = paymentData;
-
-    return {
-      order_id:                 String(table.orderId),
-      payment_mode:             method,
-      payment_amount:           finalTotal,
-      payment_status:           'paid',
-      room_id:                  String(roomId),
-      // BUG-138: order_discount + self_discount = manual + preset only (old POS parity)
-      order_discount:           (discounts.manual || 0) + (discounts.preset || 0),
-      self_discount:            (discounts.manual || 0) + (discounts.preset || 0),
-      comm_discount:            discounts.preset || 0,
-      tip_amount:               tip,
-      vat_tax:                  vatAmount,
-      gst_tax:                  Math.round(((sgst || 0) + (cgst || 0)) * 100) / 100,
-      service_tax:              serviceCharge || 0,
-      // CR-013 Phase 1.5 D-GST-3 (May-2026): real values (was hardcoded 0).
-      service_gst_tax_amount:   Math.round((serviceGstTaxAmount || 0) * 100) / 100,
-      tip_tax_amount:           Math.round((tipTaxAmount || 0) * 100) / 100,
-    };
-  },
+  // CR-405-B: order-shifted-room v1 contract (handover_5 §6)
+  // Moves active F&B lines from target (dine-in/walk-in) onto source (open room order).
+  // Does NOT settle — settlement happens separately on the source room order.
+  // v1 = { source_order_id, target_order_id, transfer_note } only.
+  // v2 (old contract) required order_id + payment_mode — no longer used.
+  transferToRoom: (table, paymentData, _roomId) => ({
+    source_order_id: String(paymentData.roomOrderId || ''), // room order (receives items)
+    target_order_id: String(table.orderId),                  // dine-in order (loses items)
+    transfer_note:   'Yes',
+  }),
 
   // ==========================================================================
   // Update Order Status (Ready / Served)
@@ -1792,122 +1885,143 @@ export const toAPI = {
       }
     }
 
-    // Compute GST and VAT totals + subtotal from item-level data
-    // BUG-246: item.price from rawOrderDetails is the LINE TOTAL (unit_price × qty),
-    // NOT the unit price. Use unit_price or food_details.price to avoid double-counting.
-    // BUG-018 Part 3: skip complimentary lines from the aggregation so the
-    // default-branch (no-override) fallback — used by dashboard printer icons
-    // and any path that omits orderItemTotal/orderSubtotal/gstTax overrides —
-    // does not inflate subtotal or tax.
+    // BUG-168 v3 (2026-07-08): Two distinct paths through financial computation.
+    // Collect Bill (auto-print) passes full financial overrides — use existing
+    // FE computation (unchanged). Manual print (OrderCard/TableCard/RePrintButton)
+    // passes no financial overrides — use backend values directly.
+    const hasFinancialOverrides = overrides.orderItemTotal !== undefined; // BUG-168 v3
     let gst_tax = 0, vat_tax = 0, computedSubtotal = 0;
-    billFoodList.forEach(item => {
-      if (isDetailComplimentary(item)) return;
-      const qty = parseFloat(item.quantity) || 1;
-      const unitPrice = parseFloat(item.unit_price) || parseFloat(item.food_details?.price) || 0;
-      const price = unitPrice > 0 ? unitPrice : (parseFloat(item.price) || 0);
-      // BUG-168 v2 (2026-07-08): the pre-existing L1808 fix used
-      // `item.total_add_on_price`, which is NOT present on `orderDetails[]`
-      // from get-single-order-new (verified via curl against order #002384 —
-      // see /app/memory/evidence/BUG-168/order_940279.json). Backend socket
-      // payload also omits `order_sub_total_amount`, so post-April-2026 the
-      // dashboard OrderContext holds `subtotalAmount = 0` and this fallback
-      // branch (see L1921-1923) fires — emitting item_total WITHOUT addons.
-      //
-      // Fix: compute addon per-unit-price × per-unit-qty × item.qty. This
-      // mirrors CollectPaymentPanel.getItemLinePrice (L212-224) verbatim so
-      // the fallback branch ≡ live-UI override branch on the same order.
-      // Complimentary carve-out (L1734-1783) already zeroes prices earlier;
-      // no interaction with BUG-018.
-      const addonPerUnit = (item.add_ons || []).reduce(
-        (s, a) => s + ((parseFloat(a.price) || 0) * (parseFloat(a.quantity) || 1)),
-        0
-      );
-      const lineTotal = (price * qty) + (addonPerUnit * qty); // BUG-168: include addons per-unit × item.qty in print subtotal
-      computedSubtotal += lineTotal;
+    let serviceChargeAmount = 0;
 
-      // Try pre-computed item-level tax first, then compute from food_details
-      let taxAmt = parseFloat(item.gst_tax_amount || item.tax_amount || 0);
-      if (!taxAmt && item.food_details) {
-        const taxPct = parseFloat(item.food_details.tax) || 0;
-        if (taxPct > 0) {
-          const isInclusive = (item.food_details.tax_calc || '').toLowerCase() === 'inclusive';
-          taxAmt = isInclusive
-            ? lineTotal * taxPct / (100 + taxPct)
-            : lineTotal * taxPct / 100;
+    if (hasFinancialOverrides) {
+      // ── COLLECT BILL PATH (existing FE computation, unchanged) ────────
+      let discountableSubtotal = 0, discountableGst = 0, discountableVat = 0; // BUG-305
+      billFoodList.forEach(item => {
+        if (isDetailComplimentary(item)) return;
+        const qty = parseFloat(item.quantity) || 1;
+        const unitPrice = parseFloat(item.unit_price) || parseFloat(item.food_details?.price) || 0;
+        const price = unitPrice > 0 ? unitPrice : (parseFloat(item.price) || 0);
+        const addonPerUnit = (item.add_ons || []).reduce(
+          (s, a) => s + ((parseFloat(a.price) || 0) * (parseFloat(a.quantity) || 1)),
+          0
+        );
+        const lineTotal = (price * qty) + (addonPerUnit * qty);
+        computedSubtotal += lineTotal;
+
+        let taxAmt = parseFloat(item.gst_tax_amount || item.tax_amount || 0);
+        if (!taxAmt && item.food_details) {
+          const taxPct = parseFloat(item.food_details.tax) || 0;
+          if (taxPct > 0) {
+            const isInclusive = (item.food_details.tax_calc || '').toLowerCase() === 'inclusive';
+            taxAmt = isInclusive
+              ? lineTotal * taxPct / (100 + taxPct)
+              : lineTotal * taxPct / 100;
+          }
         }
+
+        const taxType = (item.food_details?.tax_type || 'GST').toUpperCase();
+        // BUG-305: food_details.give_discount available from CR-028 fromAPI.order (line 159)
+        const isDiscountable = (item.food_details?.give_discount || 'Yes') !== 'No'; // BUG-305
+        if (taxType === 'VAT') {
+          vat_tax += taxAmt;
+          if (isDiscountable) { discountableSubtotal += lineTotal; discountableVat += taxAmt; } // BUG-305
+        } else {
+          gst_tax += taxAmt;
+          if (isDiscountable) { discountableSubtotal += lineTotal; discountableGst += taxAmt; } // BUG-305
+        }
+      });
+      computedSubtotal = Math.round(computedSubtotal * 100) / 100;
+
+      const overrideDiscount = overrides.discountAmount !== undefined
+        ? parseFloat(overrides.discountAmount) || 0
+        : (parseFloat(order.discount) || 0);
+      const overrideTip = overrides.tip !== undefined
+        ? parseFloat(overrides.tip) || 0 : 0;
+      const overrideDelivery = overrides.deliveryCharge !== undefined
+        ? parseFloat(overrides.deliveryCharge) || 0 : 0;
+      const postDiscountSubtotal = Math.max(0, computedSubtotal - overrideDiscount);
+
+      const scApplicable =
+        order.orderType === 'dineIn' || order.isRoom === true;
+
+      serviceChargeAmount = overrides.serviceChargeAmount !== undefined
+        ? overrides.serviceChargeAmount
+        : (scApplicable
+            ? (serviceChargePercentage > 0
+                ? Math.round(postDiscountSubtotal * serviceChargePercentage / 100 * 100) / 100
+                : (order.serviceTax || 0))
+            : 0);
+
+      if (overrides.serviceChargeAmount === undefined
+          && computedSubtotal > 0) {
+        // BUG-305: use discountableSubtotal; non-discountable items' GST/VAT unchanged
+        const discountableRatio = discountableSubtotal > 0
+          ? overrideDiscount / discountableSubtotal : 0;
+        const scTaxRate     = (overrides.serviceChargeTaxPct  || 0) / 100;
+        const delTaxRate    = (overrides.deliveryChargeGstPct || 0) / 100;
+        gst_tax = discountableGst * (1 - discountableRatio)   // BUG-305: discountable GST ↓
+                + (gst_tax - discountableGst)                  // BUG-305: non-discountable unchanged
+                + serviceChargeAmount * scTaxRate
+                + overrideTip          * scTaxRate
+                + overrideDelivery     * delTaxRate;
+        vat_tax = discountableVat * (1 - discountableRatio)   // BUG-305: discountable VAT ↓
+                + (vat_tax - discountableVat);                 // BUG-305: non-discountable unchanged
       }
 
-      const taxType = (item.food_details?.tax_type || 'GST').toUpperCase();
-      if (taxType === 'VAT') vat_tax += taxAmt;
-      else gst_tax += taxAmt;
-    });
-    computedSubtotal = Math.round(computedSubtotal * 100) / 100;
+      gst_tax = Math.round(gst_tax * 100) / 100;
+      vat_tax = Math.round(vat_tax * 100) / 100;
 
-    // BUG-006 (AD-101): Service charge on POST-discount subtotal.
-    // Caller override still wins (CollectPaymentPanel sends the live UI value).
-    //
-    // BUG-050 (Wave 4, May-2026): when caller did NOT pass an override (e.g.
-    // dashboard re-print from OrderCard/TableCard/PrintBillButton), fall back
-    // to the stored backend discount carried on `order.discount` (added in
-    // fromAPI.order). This mirrors how `overrideTip` / `overrideDelivery`
-    // already fall back to `order.tipAmount` / `order.deliveryCharge` (see
-    // L1597 / L1603-L1605 below), restoring print parity with Collect Bill
-    // for orders that had a stored discount.
-    const overrideDiscount = overrides.discountAmount !== undefined
-      ? parseFloat(overrides.discountAmount) || 0
-      : (parseFloat(order.discount) || 0);
-    const overrideTip = overrides.tip !== undefined
-      ? parseFloat(overrides.tip) || 0 : 0;
-    const overrideDelivery = overrides.deliveryCharge !== undefined
-      ? parseFloat(overrides.deliveryCharge) || 0 : 0;
-    const postDiscountSubtotal = Math.max(0, computedSubtotal - overrideDiscount);
+    } else {
+      // ── MANUAL PRINT PATH (backend passthrough) ───────────────────────
+      // BUG-168 v3: No subtotal/SC computation. Backend provides correct values
+      // via order.subtotalAmount, order.subtotalBeforeTax, order.serviceTax.
+      // Only compute GST/VAT split from item-level tax data.
+      serviceChargeAmount = order.serviceTax || 0;
 
-    // BUG-023 (Apr-2026): Mirror CollectPaymentPanel SC-applicability rule
-    // (CollectPaymentPanel.jsx:244) in the default branch so dashboard-card
-    // manual print (OrderCard/TableCard) does not emit service charge for
-    // takeaway / delivery. Override path is untouched.
-    //
-    // BUG-023 defect-in-fix (Apr-2026, follow-up): Previous implementation
-    // also checked `order.isWalkIn === true`. In `fromAPI.order` (line 134)
-    // `isWalkIn` is derived as `!api.table_id || api.table_id === 0`, which
-    // is TRUE for every takeaway/delivery order (no table_id). That caused
-    // the gate to evaluate true for exactly the two types the fix was meant
-    // to exempt — SC was still emitted. `normalizeOrderType` folds walk-ins
-    // into `'dineIn'` anyway, so the first clause covers them. Effective
-    // rule matches CollectPaymentPanel: dineIn || isRoom.
-    const scApplicable =
-      order.orderType === 'dineIn' || order.isRoom === true;
-
-    const serviceChargeAmount = overrides.serviceChargeAmount !== undefined
-      ? overrides.serviceChargeAmount
-      : (scApplicable
-          ? (serviceChargePercentage > 0
-              ? Math.round(postDiscountSubtotal * serviceChargePercentage / 100 * 100) / 100
-              : (order.serviceTax || 0))
-          : 0);
-
-    // CR-013 (May-2026): re-print fallback path. When CollectPaymentPanel is the
-    // caller, overrides.serviceChargeAmount + overrides.gstTax are already set
-    // and we skip recompute. For dashboard-driven re-prints (TableCard /
-    // OrderCard / RePrintButton) overrides may be empty — recompute uses the
-    // component-specific GST rate pcts forwarded via overrides:
-    //   - SC GST + Tip GST   → overrides.serviceChargeTaxPct
-    //   - Delivery GST       → overrides.deliveryChargeGstPct
-    // Tip rides SC rate (frozen rule §1 row 9). Missing/unset → 0 (force-0
-    // fallback per frozen rule §1 row 10). Pre-CR-013 used `avgGstRate` here.
-    if (overrides.serviceChargeAmount === undefined
-        && computedSubtotal > 0) {
-      const discountRatio = overrideDiscount / computedSubtotal;
-      const scTaxRate     = (overrides.serviceChargeTaxPct  || 0) / 100;
-      const delTaxRate    = (overrides.deliveryChargeGstPct || 0) / 100;
-      gst_tax = gst_tax * (1 - discountRatio)
-              + serviceChargeAmount * scTaxRate
-              + overrideTip          * scTaxRate
-              + overrideDelivery     * delTaxRate;
+      // BUG-271 FIX-COMPLETE (2026-07-30): add food_details.tax fallback.
+      // Backend returns gst_tax_amount: null on all order_detail rows.
+      // Without a fallback, per-item accumulation always produces gst_tax=0 / vat_tax=0.
+      // Mirror the Collect Bill path (L1821-1830) which already uses this fallback correctly.
+      billFoodList.forEach(item => {
+        if (isDetailComplimentary(item)) return;
+        const qty          = parseFloat(item.quantity)   || 1;
+        const unitPrice    = parseFloat(item.unit_price)  || parseFloat(item.food_details?.price) || 0;
+        const price        = unitPrice > 0 ? unitPrice : (parseFloat(item.price) || 0);
+        const addonPerUnit = (item.add_ons || []).reduce(
+          (s, a) => s + ((parseFloat(a.price) || 0) * (parseFloat(a.quantity) || 1)),
+          0
+        );
+        // BUG-170: variation upcharge was missing from tax base on manual reprint paths
+        // (OrderCard / TableCard / RePrintButton). Uses item.variation[].values[].optionPrice
+        // (Option A) — item.variation_amount is null on pre-BUG-VQTY orders and unsafe.
+        // COLLECT BILL PATH not touched — its gstTax override already carries correct value.
+        const variationPerUnit = (item.variation || []).reduce(
+          (sum, v) => sum + (Array.isArray(v.values) ? v.values.reduce(
+            (s, opt) => s + (parseFloat(opt.optionPrice) || 0), 0) : 0), 0
+        );
+        const lineTotal = (price * qty) + (addonPerUnit * qty) + (variationPerUnit * qty);
+        let taxAmt = parseFloat(item.gst_tax_amount || item.tax_amount || 0);
+        if (!taxAmt && item.food_details) {
+          const taxPct = parseFloat(item.food_details.tax) || 0;
+          if (taxPct > 0) {
+            const isInclusive = (item.food_details.tax_calc || '').toLowerCase() === 'inclusive';
+            taxAmt = isInclusive
+              ? lineTotal * taxPct / (100 + taxPct)
+              : lineTotal * taxPct / 100;
+          }
+        }
+        const taxType = (item.food_details?.tax_type || 'GST').toUpperCase();
+        if (taxType === 'VAT') {
+          vat_tax += taxAmt;
+        } else {
+          gst_tax += taxAmt;
+        }
+      });
+      gst_tax = Math.round(gst_tax * 100) / 100;
+      const scTaxRateManual = (overrides.serviceChargeTaxPct || 0) / 100; // BUG-536
+      gst_tax = Math.round((gst_tax + serviceChargeAmount * scTaxRateManual) * 100) / 100; // BUG-536
+      vat_tax = Math.round(vat_tax * 100) / 100;
     }
-
-    gst_tax = Math.round(gst_tax * 100) / 100;
-    vat_tax = Math.round(vat_tax * 100) / 100;
 
     // Format date as DD/MMM/YYYY HH:MM AM/PM
     const formatBillDate = (dateStr) => {
@@ -1937,27 +2051,13 @@ export const toAPI = {
     // payment screen. Falls back to legacy behavior when overrides are absent.
     const finalOrderItemTotal = overrides.orderItemTotal !== undefined
       ? overrides.orderItemTotal
-      : (order.subtotalAmount || computedSubtotal || 0);
-    // BUG-282: when caller didn't pass overrides (e.g. dashboard TableCard /
-    // OrderCard printer icon), compute Subtotal with BUG-281 semantic:
-    //   order_subtotal = itemBase + serviceCharge + tip
-    // Discount is absent from the socket-hydrated order (it's only entered on
-    // the Collect Bill page), so no discount term here.
+      : (order.subtotalAmount || 0);  // BUG-168 v3: backend value only, no FE fallback
+    // BUG-168 v3: backend's order_sub_total_without_tax already includes
+    // items + SC + tip + delivery (everything before tax). No recomputation needed.
+    // Previous code double-counted SC (subtotalBeforeTax already contains it).
     const finalOrderSubtotal = overrides.orderSubtotal !== undefined
       ? overrides.orderSubtotal
-      : (() => {
-          const itemBase = order.subtotalBeforeTax || order.subtotalAmount || computedSubtotal || 0;
-          const tipAmt   = overrides.tip !== undefined ? overrides.tip : (parseFloat(order.tipAmount) || 0);
-          // Dashboard / re-print fallback: when no live override is supplied, fold
-          // the order's delivery principal into Subtotal so dashboard re-prints match
-          // the cashier-print Subtotal value. `order.deliveryCharge` is hydrated by
-          // fromAPI.order (L280). Live-print path (override branch above) already
-          // carries delivery via CollectPaymentPanel.subtotal cascade.
-          const delAmt   = overrides.deliveryCharge !== undefined
-            ? (parseFloat(overrides.deliveryCharge) || 0)
-            : (parseFloat(order.deliveryCharge) || 0);
-          return Math.round((itemBase + serviceChargeAmount + tipAmt + delAmt) * 100) / 100;
-        })();
+      : (order.subtotalBeforeTax || 0);  // BUG-168 v3: backend value only
     const finalPaymentAmount = overrides.paymentAmount !== undefined
       ? overrides.paymentAmount
       : (order.amount || 0);
@@ -2044,6 +2144,7 @@ export const toAPI = {
     return {
       order_id: order.orderId,
       restaurant_order_id: order.orderNumber || '',
+      daily_token: order.dailyToken || '', // BUG-144: token number for bill print
       print_type: 'bill',
       // PRINT-CORRECTIVE (May-2026, PRINT-002): two distinct semantics:
       //   payment_amount → "Total" line  → food-only (finalPaymentAmount)
@@ -2071,8 +2172,9 @@ export const toAPI = {
       tablename,
       custName: order.customerName || '',
       custPhone: order.phone || '',
-      custGSTName: '',
-      custGST: '',
+      restaurant_phone: overrides.restaurantPhone || '', // BUG-328: Owner Phone from Profile API (PrinterConfigPreviewPage restaurant_header field)
+      custGSTName: overrides.custGSTName || '',  // CR-116: B2B customer GST name
+      custGST: overrides.custGST || '',          // CR-116: B2B customer GST number
       billFoodList,
       orderNote: order.orderNote || '',
       serviceChargeAmount,
@@ -2100,6 +2202,19 @@ export const toAPI = {
       deliveryCustPhone: order.orderType === 'delivery'
         ? (overrides.deliveryAddress?.contactPersonNumber || order.deliveryAddress?.contact_person_number || order.phone || '')
         : '',
+      // BUG-395: 4 delivery address sub-fields (house/floor/city/state) absent from buildBillPrintPayload — backend brief 2026-09-10 requested these. Follows same pattern as deliveryCustAddress/Pincode/Phone above.
+      deliveryCustHouse: order.orderType === 'delivery'
+        ? (overrides.deliveryAddress?.house || order.deliveryAddress?.house || '')
+        : '',
+      deliveryCustFloor: order.orderType === 'delivery'
+        ? (overrides.deliveryAddress?.floor || order.deliveryAddress?.floor || '')
+        : '',
+      deliveryCustCity: order.orderType === 'delivery'
+        ? (overrides.deliveryAddress?.city || order.deliveryAddress?.city || '')
+        : '',
+      deliveryCustState: order.orderType === 'delivery'
+        ? (overrides.deliveryAddress?.state || order.deliveryAddress?.state || '')
+        : '',
       Tip: overrides.tip !== undefined ? overrides.tip : (order.tipAmount || 0),
       station_kot: '',
       order_type: order.rawOrderType || 'dinein',
@@ -2116,8 +2231,8 @@ export const toAPI = {
       // entry / audit reprint of a paid order prints the real stored values
       // (e.g. 'paid' / 'cash'). PayLater backend typo 'sucess' passes
       // through unchanged per L1184 backend contract.
-      payment_status: order.paymentStatus || '',
-      payment_method: order.paymentMethod || '',
+      payment_status: overrides.paymentStatus || order.paymentStatus || '',  // BUG-556: collect-bill auto-print passes resolved 'paid'; manual reprint falls through to stored order value
+      payment_method: overrides.paymentMethod || order.paymentMethod || '',  // BUG-556
       gst_tax: finalGstTax,
       // CR-013 Phase 1.5 D-GST-4-PRINT-PAYLOAD (May-2026, owner-approved):
       // composite GST split into CGST + SGST (50/50) on the print payload so
@@ -2132,6 +2247,8 @@ export const toAPI = {
       delivery_charge: overrides.deliveryCharge !== undefined ? overrides.deliveryCharge : (order.deliveryCharge || 0),
       // BUG-083: delivery GST for print template. Absent for non-delivery.
       ...(overrides.deliveryGstAmount > 0 ? { delivery_charge_gst_amount: Math.round(overrides.deliveryGstAmount * 100) / 100 } : {}),
+      // BUG-369: pass customer copy flag to Printer Agent device
+      ...(overrides.printBillCustomerCopy ? { print_bill_customer_copy: 'Yes' } : {}),
     };
   },
 };

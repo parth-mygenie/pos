@@ -23,7 +23,7 @@ const FOOD_FILTERS = [
   { id: "jain", label: "Jain", color: "#8B5CF6" },
 ];
 
-const ProductList = ({ foods, categories, addons, selectedCategoryId, deleteReasons, menuType, onRefresh, onRefreshAddons }) => {
+const ProductList = ({ foods, categories, addons, selectedCategoryId, deleteReasons, menuType, clients, onRefresh, onRefreshAddons, onStockToggleDone, isLoading }) => { // CR-140, G1
   const { currencySymbol } = useRestaurant();
   const { toast } = useToast();
 
@@ -106,20 +106,25 @@ const ProductList = ({ foods, categories, addons, selectedCategoryId, deleteReas
   const handleStatusToggle = useCallback(async (product) => {
     const newStatus = product.isActive ? 0 : 1;
     try {
-      await menuService.toggleFoodStatus(product.productId, newStatus);
+      await menuService.toggleFoodStatus(product.productId, newStatus, menuType); // BUG-301
       toast({ title: newStatus ? "Activated" : "Deactivated", description: `"${product.productName}" is now ${newStatus ? 'active' : 'inactive'}.` });
       onRefresh();
     } catch (err) {
       console.error('[ProductList] Status toggle failed:', err);
       toast({ title: "Error", description: err.readableMessage, variant: "destructive" });
     }
-  }, [toast, onRefresh]);
+  }, [toast, onRefresh, menuType]); // BUG-301: added menuType dep
 
   // Quick edit save — calls API #2
   const handleQuickSave = useCallback(async (product, formData) => {
     try {
       const foodInfo = toAPI.foodInfo({ ...formData, foodFor: menuType });
-      await menuService.editFood(product.productId, foodInfo);
+      // BUG-327: aggregator uses flat multipart (no food_info wrapper); no images in quick-edit
+      if (menuType === 'Aggregator') {
+        await menuService.editFoodAggregator(product.productId, foodInfo, null, null);
+      } else {
+        await menuService.editFood(product.productId, foodInfo);
+      }
       toast({ title: "Saved", description: "Quick edit saved." });
       setQuickEditId(null);
       onRefresh();
@@ -143,6 +148,7 @@ const ProductList = ({ foods, categories, addons, selectedCategoryId, deleteReas
         addons={addons}
         currencySymbol={currencySymbol}
         menuType={menuType}
+        clients={clients}
         onBack={() => setEditingProduct(null)}
         onSave={() => {
           setEditingProduct(null);
@@ -229,10 +235,29 @@ const ProductList = ({ foods, categories, addons, selectedCategoryId, deleteReas
 
       {/* Product count */}
       <div className="text-xs mb-2" style={{ color: COLORS.grayText }}>
-        Showing {filteredProducts.length} of {products.length} products
+        {isLoading ? 'Loading products…' : `Showing ${filteredProducts.length} of ${products.length} products`}
       </div>
 
+      {/* Loading skeleton */}
+      {isLoading && (
+        <div className="flex-1 space-y-2 overflow-hidden" data-testid="product-list-skeleton">
+          {[1,2,3,4].map(i => (
+            <div key={i} className="rounded-xl border animate-pulse" style={{ borderColor: COLORS.borderGray }}>
+              <div className="flex items-center gap-3 p-3">
+                <div className="w-12 h-12 rounded-lg bg-gray-100 flex-shrink-0" />
+                <div className="flex-1 space-y-2">
+                  <div className="h-3 bg-gray-100 rounded w-2/3" />
+                  <div className="h-2.5 bg-gray-100 rounded w-1/3" />
+                </div>
+                <div className="h-6 w-16 bg-gray-100 rounded-full" />
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
       {/* Product List with DnD */}
+      {!isLoading && (
       <DragDropContext onDragEnd={handleDragEnd}>
         <Droppable droppableId="products">
           {(provided) => (
@@ -261,6 +286,9 @@ const ProductList = ({ foods, categories, addons, selectedCategoryId, deleteReas
                           onStatusToggle={() => handleStatusToggle(product)}
                           onQuickSave={(formData) => handleQuickSave(product, formData)}
                           onQuickCancel={() => setQuickEditId(null)}
+                          menuType={menuType}
+                          clients={clients}
+                          onStockToggleDone={onStockToggleDone || onRefresh} // G1: propagate item from toggle
                         />
                       </div>
                     )}
@@ -272,6 +300,7 @@ const ProductList = ({ foods, categories, addons, selectedCategoryId, deleteReas
           )}
         </Droppable>
       </DragDropContext>
+      )}
     </div>
   );
 };

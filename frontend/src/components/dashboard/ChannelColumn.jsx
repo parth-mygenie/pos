@@ -47,6 +47,12 @@ const ChannelColumn = ({
   onConfirmOrder,
   onUpdateStatus,
   onFoodTransfer,    // Handler for food transfer
+  // CR-106: Aggregator handlers
+  onAggregatorReady,
+  onAggregatorDispatch,
+  // BUG-372: Shift/Merge table handlers
+  onTableShift,
+  onMergeOrder,
   // Permissions
   hasPermission,
   // Other
@@ -57,6 +63,8 @@ const ChannelColumn = ({
   searchQuery,
   matchingIds,
   onHideColumn,      // Handler to hide this column
+  isTablet = false,  // CR-414: full-width stacked column + fluid grid <1024px (OD-537-03)
+  activeFirst = false,  // CR-429
 }) => {
   // Filter by search if applicable
   const filteredItems = useMemo(() => {
@@ -110,7 +118,14 @@ const ChannelColumn = ({
       return [{
         key: '__no_section__',
         name: null,
-        items: sortByActiveFirst(filteredItems, TABLE_STATUS_PRIORITY),
+        items: [...filteredItems].sort((a, b) => { // BUG-591: createdAt asc (oldest first) — was sortByActiveFirst (label numeric, wrong for same-status columns)
+          const at = a?.createdAt ?? a?.order?.createdAt ?? '';
+          const bt = b?.createdAt ?? b?.order?.createdAt ?? '';
+          if (!at && !bt) return 0;
+          if (!at) return 1;  // no timestamp → push to end
+          if (!bt) return -1;
+          return at < bt ? -1 : at > bt ? 1 : 0;
+        }),
       }];
     }
 
@@ -151,20 +166,19 @@ const ChannelColumn = ({
     };
     const compare = viewType === 'table' ? tableCompare : orderCompare;
 
-    // Step 3: within each bucket, sort occupied then available
+    // Step 3: within each bucket, sort by groupingMode
     for (const bucket of buckets.values()) {
       if (groupingMode === 'status') {
         bucket.items = sortByActiveFirst(bucket.items, TABLE_STATUS_PRIORITY);
+      } else if (activeFirst) {
+        // CR-429: Active First — occupied tables before available, label-numeric within each group
+        const isAvail = (it) => ['available', 'disabled', 'reserved'].includes(it.status);
+        const occ   = bucket.items.filter(it => !isAvail(it)).sort(compare);
+        const avail = bucket.items.filter(it =>  isAvail(it)).sort(compare);
+        bucket.items = [...occ, ...avail];
       } else {
-        const occupied = [];
-        const available = [];
-        bucket.items.forEach(it => {
-          if (isAvailable(it)) available.push(it);
-          else occupied.push(it);
-        });
-        occupied.sort(compare);
-        available.sort(compare);
-        bucket.items = [...occupied, ...available];
+        // BUG-245: channel mode — stable label-numeric sort, no occupied-first bucketing
+        bucket.items.sort(compare);
       }
     }
 
@@ -176,7 +190,7 @@ const ChannelColumn = ({
       arr.unshift(ns);
     }
     return arr;
-  }, [filteredItems, groupingMode, viewType]);
+  }, [filteredItems, groupingMode, viewType, activeFirst]); // CR-429: add activeFirst dep
 
   // Count active orders (non-available, non-reserved)
   const activeCount = useMemo(() => {
@@ -190,14 +204,16 @@ const ChannelColumn = ({
   // Calculate width based on actual columns
   const cardWidth = viewType === 'table' ? TABLE_CARD_WIDTH : ORDER_CARD_WIDTH;
   const columnWidth = (actualColumns * cardWidth) + ((actualColumns - 1) * GAP) + PADDING;
+  // CR-432: true when desktop order view — drives column-count masonry (no height-alignment gaps)
+  const isOrderDesktop = viewType === 'order' && !isTablet;
 
   return (
     <div
       data-testid={`channel-column-${channel.id}`}
-      className="flex flex-col h-full bg-white rounded-lg shadow-sm overflow-hidden flex-shrink-0"
+      className={`flex flex-col ${isTablet ? 'h-auto' : 'h-full'} bg-white rounded-lg shadow-sm overflow-hidden flex-shrink-0`} // CR-414
       style={{ 
-        width: `${columnWidth}px`,
-        minWidth: `${columnWidth}px`,
+        width: isTablet ? '100%' : `${columnWidth}px`,       // CR-414: fill row on tablet
+        minWidth: isTablet ? 0 : `${columnWidth}px`,         // CR-414
         borderRight: isLast ? 'none' : `1px solid ${COLORS.borderGray}`,
       }}
     >
@@ -255,7 +271,9 @@ const ChannelColumn = ({
           </div>
         ) : (
           <div className="flex flex-col gap-2">
-            {sortedGroups.map(group => (
+            {sortedGroups
+              .filter(group => viewType !== 'order' || group.items.some(i => i.orderId)) /* BUG-571: hide empty groups in order view */
+              .map(group => (
               <div key={group.key}>
                 {/* BUG-070 (Wave 5, May-2026): section header chip.
                     Hidden when `group.name` is null (`__no_section__`
@@ -278,12 +296,17 @@ const ChannelColumn = ({
                   </div>
                 )}
                 <div 
-                  className="grid gap-2"
-                  style={{ 
-                    gridTemplateColumns: viewType === 'table' 
-                      ? `repeat(${actualColumns}, ${TABLE_CARD_WIDTH}px)` 
-                      : `repeat(${actualColumns}, 1fr)`,
-                  }}
+                  className={isOrderDesktop ? '' : 'grid gap-2'} // CR-432: column-count for desktop order view
+                  style={isOrderDesktop
+                    ? { columnCount: actualColumns, columnGap: '8px' } // CR-432: masonry — cards attach directly, no row-height gaps
+                    : {
+                        gridTemplateColumns: isTablet // CR-414: fluid auto-fill on tablet (OD-537-03)
+                          ? (viewType === 'table' ? 'repeat(auto-fill, minmax(140px, 1fr))' : 'repeat(auto-fill, minmax(280px, 1fr))')
+                          : viewType === 'table' 
+                            ? `repeat(${actualColumns}, ${TABLE_CARD_WIDTH}px)` 
+                            : `repeat(${actualColumns}, 1fr)`,
+                      }
+                  }
                 >
                   {group.items.map((item) => {
                     const key = item.id || `${channel.id}-${item.orderId}`;
@@ -309,12 +332,47 @@ const ChannelColumn = ({
                           onToggleSnooze={onToggleSnooze}
                           currencySymbol={currencySymbol}
                           isEngaged={isOrderEngaged?.(item.orderId) || isTableEngaged?.(item.tableId)}
+                          onAggregatorReady={onAggregatorReady}
+                          onAggregatorDispatch={onAggregatorDispatch}
                         />
                       );
                     }
                     
                     // List View - render OrderCard
                     const order = item.order || item;
+                    // CR-432: wrap in break-inside:avoid div for column-count masonry layout
+                    if (isOrderDesktop) {
+                      return (
+                        <div key={key} style={{ breakInside: 'avoid', marginBottom: '8px' }}>
+                          <OrderCard
+                            order={order}
+                            orderType={item.orderType || channel.id}
+                            tableLabel={item.label || item.tableNumber}
+                            isSnoozed={snoozedOrders?.has(item.id)}
+                            isEngaged={isOrderEngaged?.(order.orderId) || isTableEngaged?.(item.tableId)}
+                            canCancelOrder={hasPermission?.('order_cancel')}
+                            canMergeOrder={channel.id === 'dineIn' && hasPermission?.('merge_table')}
+                            canShiftTable={channel.id === 'dineIn' && hasPermission?.('transfer_table')}
+                            canFoodTransfer={channel.id === 'dineIn' && hasPermission?.('food_transfer')}
+                            onTableShift={channel.id === 'dineIn' ? onTableShift : undefined}
+                            onMergeOrder={channel.id === 'dineIn' ? onMergeOrder : undefined}
+                            canPrintBill={hasPermission?.('print_icon')}
+                            canBill={hasPermission?.('bill')}
+                            onToggleSnooze={onToggleSnooze}
+                            onEdit={() => onItemClick?.(item)}
+                            onMarkReady={() => onMarkReady?.(item)}
+                            onMarkServed={() => onMarkServed?.(item)}
+                            onBillClick={() => onBillClick?.(item)}
+                            onAccept={(order) => onConfirmOrder?.(item)}
+                            onCancelOrder={onCancelOrder}
+                            onItemStatusChange={onItemStatusChange}
+                            onFoodTransfer={onFoodTransfer ? (order, foodItem) => onFoodTransfer(order, foodItem, item) : undefined}
+                            onAggregatorReady={onAggregatorReady}
+                            onAggregatorDispatch={onAggregatorDispatch}
+                          />
+                        </div>
+                      );
+                    }
                     return (
                       <OrderCard
                         key={key}
@@ -327,6 +385,8 @@ const ChannelColumn = ({
                         canMergeOrder={channel.id === 'dineIn' && hasPermission?.('merge_table')}
                         canShiftTable={channel.id === 'dineIn' && hasPermission?.('transfer_table')}
                         canFoodTransfer={channel.id === 'dineIn' && hasPermission?.('food_transfer')}
+                        onTableShift={channel.id === 'dineIn' ? onTableShift : undefined}
+                        onMergeOrder={channel.id === 'dineIn' ? onMergeOrder : undefined}
                         canPrintBill={hasPermission?.('print_icon')}
                         canBill={hasPermission?.('bill')}
                         onToggleSnooze={onToggleSnooze}
@@ -338,6 +398,8 @@ const ChannelColumn = ({
                         onCancelOrder={onCancelOrder}
                         onItemStatusChange={onItemStatusChange}
                         onFoodTransfer={onFoodTransfer ? (order, foodItem) => onFoodTransfer(order, foodItem, item) : undefined}
+                        onAggregatorReady={onAggregatorReady}
+                        onAggregatorDispatch={onAggregatorDispatch}
                       />
                     );
                   })}

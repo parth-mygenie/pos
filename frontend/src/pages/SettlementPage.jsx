@@ -39,7 +39,10 @@ const SettlementPage = () => {
   const navigate = useNavigate();
   const { toast } = useToast();
 
-  const [isSidebarExpanded, setIsSidebarExpanded] = useState(false);
+  // BUG-361: persist sidebar state across reloads
+  const [isSidebarExpanded, setIsSidebarExpanded] = useState(
+    () => localStorage.getItem('mygenie_sidebar_expanded') === 'true'
+  );
   const [date, setDate] = useState(new Date());
   const [report, setReport] = useState(null);
   const [waiterList, setWaiterList] = useState([]);
@@ -176,7 +179,7 @@ const SettlementPage = () => {
   return (
     <div className="flex h-screen bg-white" data-testid="settlement-page">
       <Sidebar
-        isExpanded={isSidebarExpanded} setIsExpanded={setIsSidebarExpanded}
+        isExpanded={isSidebarExpanded} setIsExpanded={(v) => { setIsSidebarExpanded(v); localStorage.setItem('mygenie_sidebar_expanded', String(v)); }}
         isSilentMode={false} setIsSilentMode={() => {}}
         onOpenSettings={() => {}} onOpenMenu={() => {}} onOpenCredit={() => {}}
         onRefresh={() => {}} isRefreshing={false} isOrderEntryOpen={false}

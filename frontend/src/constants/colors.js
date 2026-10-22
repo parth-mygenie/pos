@@ -46,3 +46,11 @@ export const BOOKING_SOURCES = {
   "website": { label: "W", color: COLORS.primaryGreen },
   "direct": { label: "D", color: COLORS.primaryOrange },
 };
+
+// CR-433: status-based colour for card border, amount, and table/order label
+export const getStatusColor = (fOs, fallback = COLORS.darkText) => {
+  if (fOs === 1)              return '#F59E0B';           // Preparing → Yellow
+  if (fOs === 2)              return COLORS.primaryOrange; // Ready     → Orange
+  if (fOs === 5 || fOs === 6) return COLORS.primaryGreen;  // Served/Billed → Green
+  return fallback; // Hold(8), YTC(7), PayLater(9), Agg(0) → caller's fallback
+};

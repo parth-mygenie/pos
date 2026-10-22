@@ -58,7 +58,10 @@ const DailySalesMockup = () => {
   const navigate = useNavigate();
   const { restaurant } = useRestaurant();
   const downloadRef = useRef(null);
-  const [isSidebarExpanded, setIsSidebarExpanded] = useState(false);
+  // BUG-361: persist sidebar state across reloads
+  const [isSidebarExpanded, setIsSidebarExpanded] = useState(
+    () => localStorage.getItem('mygenie_sidebar_expanded') === 'true'
+  );
   const [isSilentMode, setIsSilentMode] = useState(false);
 
   const today = new Date();
@@ -90,7 +93,14 @@ const DailySalesMockup = () => {
     const t = new Date(); let f;
     if (p === 'Today') f = t;
     else if (p === '7D') f = new Date(t.getTime() - 6 * 86400000);
-    else if (p === '30D') f = new Date(t.getTime() - 29 * 86400000);
+    else if (p === 'LM') {
+      const now = new Date();
+      const lf = fmtISO(new Date(now.getFullYear(), now.getMonth() - 1, 1));
+      const lt = fmtISO(new Date(now.getFullYear(), now.getMonth(), 0));
+      setFromDate(lf); setToDate(lt); setAppliedFrom(lf); setAppliedTo(lt); setActivePreset(p); // CR-422
+      setSharedFrom(lf); setSharedTo(lt);
+      return;
+    }
     else if (p === 'MTD') { f = new Date(t.getFullYear(), t.getMonth(), 1); }
     else return;
     const fd = fmtISO(f); const td = fmtISO(t);
@@ -201,11 +211,11 @@ const DailySalesMockup = () => {
 
   return (
     <div className="flex h-screen bg-white font-sans" data-testid="s11-daily-sales-page">
-      <Sidebar isExpanded={isSidebarExpanded} setIsExpanded={setIsSidebarExpanded} isSilentMode={isSilentMode} setIsSilentMode={setIsSilentMode} onOpenSettings={() => {}} onOpenMenu={() => {}} onOpenCredit={() => {}} onRefresh={fetchData} isRefreshing={isLoading} isOrderEntryOpen={false} />
+      <Sidebar isExpanded={isSidebarExpanded} setIsExpanded={(v) => { setIsSidebarExpanded(v); localStorage.setItem('mygenie_sidebar_expanded', String(v)); }} isSilentMode={isSilentMode} setIsSilentMode={setIsSilentMode} onOpenSettings={() => {}} onOpenMenu={() => {}} onOpenCredit={() => {}} onRefresh={fetchData} isRefreshing={isLoading} isOrderEntryOpen={false} />
       <div className="flex-1 flex overflow-hidden">
         <main className="flex-1 flex flex-col overflow-hidden bg-zinc-50">
           {/* Header — S7 pattern */}
-          <header className="flex items-center justify-between px-8 py-5 bg-white border-b border-zinc-200 shrink-0" data-testid="s11-header">
+          <header className="flex items-center justify-between px-8 py-5 bg-white border-b border-zinc-200 shrink-0 flex-wrap gap-y-3" data-testid="s11-header"> {/* BUG-555 */}
             <div className="flex items-center gap-4">
               <button className="p-2 hover:bg-zinc-100 rounded-lg transition-colors" data-testid="s11-back-btn" onClick={() => navigate('/reports-module/sales')}>
                 <ArrowLeft className="w-5 h-5 text-zinc-600" />
@@ -215,7 +225,7 @@ const DailySalesMockup = () => {
                 <p className="text-[11px] text-zinc-500 mt-0.5">Day-by-day revenue with trend indicators · by collection date{' · '}<button onClick={() => navigate('/reports-module/definitions')} className="text-emerald-700 hover:underline font-medium" data-testid="s11-definitions-link">ⓘ Definitions</button></p>
               </div>
             </div>
-            <div className="flex items-center gap-3">
+            <div className="flex items-center gap-3 flex-wrap">
               <div className={`flex items-center gap-2 px-3 py-2 border ${draftDirty && draftValid ? 'border-[#F26B33]' : 'border-zinc-200'} bg-white rounded-lg`} data-testid="s11-daterange">
                 <CalendarIcon className="w-4 h-4 text-zinc-500" />
                 <label className="flex items-center gap-1.5 text-sm text-zinc-600"><span className="text-xs text-zinc-400 uppercase tracking-wide">From</span><input type="date" value={fromDate} onChange={(e) => setFromDate(e.target.value)} disabled={isLoading} max={fmtISO(today)} className="bg-transparent border-0 outline-none text-sm font-medium text-zinc-800 cursor-pointer focus:ring-0 p-0" data-testid="s11-date-from" /></label>
@@ -224,7 +234,7 @@ const DailySalesMockup = () => {
               </div>
               <button onClick={handleApply} disabled={isLoading || !canApply} className={`flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-medium transition-all ${canApply ? 'bg-[#329937] text-white shadow-sm hover:bg-[#287a2d]' : 'bg-zinc-100 text-zinc-400 cursor-not-allowed'}`} data-testid="s11-apply-btn"><Check className="w-4 h-4" /> Apply</button>
               <div className="flex items-center gap-1 px-1.5 py-1 bg-zinc-100 rounded-lg" data-testid="s11-presets">
-                {['Today', '7D', '30D', 'MTD'].map((p) => (<button key={p} disabled={isLoading} className={`px-2.5 py-1 text-xs font-medium rounded-md transition-all ${activePreset === p ? 'bg-white text-zinc-900 shadow-sm' : 'text-zinc-600 hover:bg-white/50'}`} data-testid={`s11-preset-${p.toLowerCase()}`} onClick={() => handlePreset(p)}>{p}</button>))}
+                {['Today', '7D', 'LM', 'MTD'].map((p) => (<button key={p} disabled={isLoading} className={`px-2.5 py-1 text-xs font-medium rounded-md transition-all ${activePreset === p ? 'bg-white text-zinc-900 shadow-sm' : 'text-zinc-600 hover:bg-white/50'}`} data-testid={`s11-preset-${p.toLowerCase()}`} onClick={() => handlePreset(p)}>{p}</button>))}
               </div>
               <div className="relative" ref={downloadRef}>
                 <button onClick={() => setShowDownloadMenu((v) => !v)} disabled={isLoading || !analytics} className={`inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-medium border border-[#F26B33] text-[#F26B33] hover:bg-orange-50 transition-colors shadow-sm ${isLoading || !analytics ? 'opacity-50 cursor-not-allowed' : ''}`} data-testid="s11-download-trigger"><Download className="w-4 h-4" /> Download</button>

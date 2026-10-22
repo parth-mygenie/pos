@@ -1,6 +1,6 @@
 // Firebase Configuration - Reads all values from environment variables
 import { initializeApp } from 'firebase/app';
-import { getMessaging, getToken, onMessage } from 'firebase/messaging';
+import { getMessaging, getToken, onMessage, isSupported } from 'firebase/messaging';
 
 const firebaseConfig = {
   apiKey: process.env.REACT_APP_FIREBASE_API_KEY,
@@ -20,10 +20,24 @@ let messaging = null;
 
 try {
   app = initializeApp(firebaseConfig);
-  messaging = getMessaging(app);
-  console.log('[Firebase] Initialized successfully');
+  console.log('[Firebase] App initialized');
 } catch (error) {
-  console.error('[Firebase] Init failed:', error.message);
+  console.error('[Firebase] App init failed:', error.message);
+}
+
+// BUG-560: async guard — getMessaging() fires an async rejection on unsupported
+// browsers that bypasses sync try/catch. isSupported() checks first, skips safely.
+if (app) {
+  isSupported().then((supported) => {
+    if (supported) {
+      messaging = getMessaging(app);
+      console.log('[Firebase] Messaging initialized');
+    } else {
+      console.log('[Firebase] Messaging not supported in this browser');
+    }
+  }).catch((err) => {
+    console.warn('[Firebase] isSupported check failed:', err.message);
+  });
 }
 
 /**

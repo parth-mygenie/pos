@@ -1,8 +1,10 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { User, X, ChevronDown, ChevronUp, MapPin, Clock, Printer, ShoppingBag, Bike, Utensils, DoorOpen, Circle, CheckCircle2, Check, FileText, GitMerge, ArrowLeftRight, CornerRightUp, Loader2 } from "lucide-react";
-import { COLORS, SOURCE_COLORS } from "../../constants";
+import { COLORS, SOURCE_COLORS, getStatusColor } from "../../constants"; // CR-433
+import { GENIE_LOGO_URL } from "../../constants/colors"; // CR-110: MyGenie badge
 import OrderTimeline from "./OrderTimeline";
 import { printOrder, completePrepaidOrder } from "../../api/services/orderService";
+import { manuallyPrintAggregator } from "../../api/services/aggregatorService"; // CR-118
 import { dispatchOrder } from "../../api/services/deliveryService";
 import { useToast } from "../../hooks/use-toast";
 import { useMenu, useOrders, useRestaurant, useAuth } from "../../contexts";
@@ -11,6 +13,16 @@ import StationPickerModal from "../modals/StationPickerModal";
 import AssignRiderModal from "../modals/AssignRiderModal";
 // CR-017: WhatsApp Payment Link
 import WhatsAppPaymentModal from "./WhatsAppPaymentModal";
+
+// CR-099: Format elapsed milliseconds as "Xm" or "Xh Ym"
+const formatElapsed = (ms) => {
+  if (!ms || ms < 0) return '';
+  const mins = Math.floor(ms / 60000);
+  if (mins < 60) return `${mins}m`;
+  const h = Math.floor(mins / 60);
+  const m = mins % 60;
+  return m > 0 ? `${h}h ${m}m` : `${h}h`;
+};
 
 /**
  * Unified Order Card - Handles Dine-In, TakeAway, Delivery, Room
@@ -47,13 +59,35 @@ const OrderCard = ({
   onMergeOrder,
   onTableShift,
   onFoodTransfer,
+  // CR-106: Aggregator action handlers
+  onAggregatorReady,
+  onAggregatorDispatch,
   // BUG-029 (Apr-2026): callback invoked after successful prepaid settle so the
   // parent dashboard can clear any stale order-entry selection for this order.
   onPostSettleSuccess,
 }) => {
+  // BUG-293: derive primitive bools BEFORE hooks — safe with optional chaining (no early return yet)
+  const _allServed = (order?.items || []).filter(i => i.status !== 'served' && i.status !== 'cancelled').length === 0
+    && (order?.items || []).some(i => i.status === 'served');
+
   const [showServed, setShowServed] = useState(false);
   const [showCancelled, setShowCancelled] = useState(false);
   const [showAddress, setShowAddress] = useState(false);
+
+  // CR-099: 1-minute timer for live elapsed prep/serve time on items
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 60000);
+    return () => clearInterval(t);
+  }, []);
+
+  // BUG-293: auto-expand when all items become served (mount + real-time).
+  // CR-430: respect localStorage preference — key 'mygenie_served_auto_expand' absent/'true' = ON (default), 'false' = OFF.
+  useEffect(() => {
+    const autoExpand = localStorage.getItem('mygenie_served_auto_expand') !== 'false';
+    if (_allServed && autoExpand) setShowServed(true);
+  }, [_allServed]); // CR-430
+
   const [isPrintingKot, setIsPrintingKot] = useState(false);
   const [isPrintingBill, setIsPrintingBill] = useState(false);
   const [isSettling, setIsSettling] = useState(false);
@@ -70,7 +104,7 @@ const OrderCard = ({
   const [showWhatsAppModal, setShowWhatsAppModal] = useState(false);
   const { toast } = useToast();
   const { getProductById } = useMenu();
-  const { restaurant, printerAgents } = useRestaurant();
+  const { restaurant, printerAgents, currencySymbol } = useRestaurant(); // CR-112: added currencySymbol
   const { user } = useAuth();
   const { updateOrder } = useOrders();
 
@@ -78,6 +112,7 @@ const OrderCard = ({
 
   const source = order.source || "own";
   const isOwn = source === "own";
+  const isAggregator = order.isAggregator === true; // CR-106
   const isDineIn = orderType === "dineIn";
   const isDelivery = orderType === "delivery";
   const isTakeAway = orderType === "takeAway";
@@ -94,11 +129,13 @@ const OrderCard = ({
   // (chip, toasts, dialogs). DB `orderId` stays for API calls + data-testids
   // + React keys. Q5 rule: no fallback — display hidden when missing.
   const orderNumber = order.orderNumber;
+  const dailyToken = order.dailyToken; // BUG-144: daily reset token
+  const useToken = restaurant?.settings?.useToken; // BUG-144: gate display
   const fOrderStatus = order.fOrderStatus || 1;
   const items = order.items || [];
 
   // CR-017: WhatsApp payment link visible on unpaid orders only
-  const showWhatsAppPayment = ![3, 6, 10].includes(fOrderStatus);
+  const showWhatsAppPayment = restaurant?.settings?.whatsappMessage && ![3, 6, 10].includes(fOrderStatus); // BUG-572: gate behind restaurant whatsappMessage setting
 
   // Wave 6: cross-disable all action buttons while any async action is in progress
   const isActionInProgress = isPrintingKot || isPrintingBill || isSettling || isMarkingReady || isMarkingServed || isAcceptingOrder || isRejecting || isDispatching;
@@ -227,6 +264,25 @@ const OrderCard = ({
     }
   };
 
+
+  // CR-118: Aggregator manual print (KOT or Bill) — uses dedicated endpoint
+  const handleAggregatorPrint = async (e, printType) => {
+    e?.stopPropagation?.();
+    const printId = order.orderId; // BUG-290: internal DB ID — aggrId (e.g.'3H5H9488') casts to int 3 on backend → wrong restaurant prints
+    if (!printId || isActionInProgress) return;
+    const isKot = printType === 'aggr_kot';
+    if (isKot) setIsPrintingKot(true); else setIsPrintingBill(true);
+    try {
+      await manuallyPrintAggregator(printId, printType, order.brandName); // CR-125: pass brandName for print
+      toast({ title: isKot ? 'KOT sent' : 'Bill sent', description: `Aggregator order #${order.aggrId || orderId}` });
+    } catch (error) {
+      console.error(`[OrderCard] CR-118: Aggregator ${printType} print error:`, error);
+      toast({ title: `Failed to send ${isKot ? 'KOT' : 'Bill'}`, description: error?.message, variant: 'destructive' });
+    } finally {
+      if (isKot) setIsPrintingKot(false); else setIsPrintingBill(false);
+    }
+  };
+
   // BUG-274: Settle prepaid order (fOrderStatus 5 + paymentType 'prepaid')
   // Calls POST /api/v2/vendoremployee/order/paid-prepaid-order → backend emits update-order-paid
   // → socket handler removes order from context. No bill print here.
@@ -300,6 +356,10 @@ const OrderCard = ({
 
   // Customer/Table display - For Dine-In show table number, else customer name
   const getDisplayName = () => {
+    // BUG-Issue2: Aggregator cards use the dedicated aggrId chip (OrderCard.jsx:482–489)
+    // for ID display. order.customer is set to "#aggrId" by aggregatorTransform (CR-118)
+    // for TableCard compatibility — returning it here causes a duplicate in the header row.
+    if (isAggregator) return '';
     // For Room: show room label/number
     if (isRoom) {
       if (tableLabel) return tableLabel;
@@ -326,10 +386,9 @@ const OrderCard = ({
     return ''; // Don't show anything if no real customer name
   };
 
-  // Source logo - Only show for aggregators (swiggy, zomato, etc.)
-  // Skip MG logo for all own orders in Order View
+  // Source logo — S/Z for aggregators, MyGenie icon for own delivery (CR-110)
   const renderLogo = () => {
-    // For aggregators (swiggy, zomato, etc.) - always show logo
+    // For aggregators (swiggy, zomato, etc.) - always show letter badge
     if (!isOwn) {
       const color = SOURCE_COLORS[source] || SOURCE_COLORS.own;
       const letter = source === "swiggy" ? "S" : source === "zomato" ? "Z" : "O";
@@ -342,7 +401,18 @@ const OrderCard = ({
         </div>
       );
     }
-    // For all own orders - no logo
+    // CR-110: MyGenie mascot badge for own delivery orders
+    if (isDelivery) {
+      return (
+        <img
+          src={GENIE_LOGO_URL}
+          alt="MyGenie"
+          data-testid={`mygenie-badge-${orderId}`}
+          className="w-6 h-6 flex-shrink-0 object-contain"
+        />
+      );
+    }
+    // For other own orders - no logo
     return null;
   };
 
@@ -383,8 +453,8 @@ const OrderCard = ({
     <div
       data-testid={`order-card-${orderId}`}
       className={`relative rounded-lg shadow-sm overflow-hidden mb-2 ${isSnoozed ? "opacity-60" : ""} ${isEngaged ? "pointer-events-none" : "cursor-pointer"}`}
-      style={{ backgroundColor: COLORS.lightBg, border: `1px solid ${COLORS.borderGray}`, breakInside: 'avoid' }}
-      onClick={isEngaged ? undefined : () => onEdit?.()}
+      style={{ backgroundColor: COLORS.lightBg, border: `2px solid ${getStatusColor(fOrderStatus, COLORS.borderGray)}`, breakInside: 'avoid' }} // CR-433
+      onClick={isEngaged || isAggregator ? undefined : () => onEdit?.()} // CR-106: no-op for aggregator
     >
       {/* Engaged spinner overlay */}
       {isEngaged && (
@@ -396,8 +466,7 @@ const OrderCard = ({
       <div
         className="px-3 py-2 flex items-center gap-2"
         style={{ backgroundColor: getHeaderBgColor() }}
-        onClick={(e) => e.stopPropagation()}
-      >
+      > {/* BUG-575: removed blanket stopPropagation — individual action buttons inside keep their own */}
         {/* Left Section: Logo + Order Type + Name + Time */}
         <div className="flex items-center gap-2 flex-1 min-w-0">
           {/* Logo */}
@@ -410,7 +479,7 @@ const OrderCard = ({
 
           {/* Table/Customer Name */}
           {getDisplayName() && (
-            <span className={`${(isRoom || isDineIn) ? 'font-extrabold text-lg' : 'text-xs font-medium'} truncate`} style={{ color: COLORS.darkText }}>
+            <span className={`${(isRoom || isDineIn) ? 'font-extrabold text-lg' : 'text-xs font-medium'} truncate`} style={{ color: getStatusColor(fOrderStatus, COLORS.darkText) }}> {/* CR-433 */}
               {getDisplayName()}
             </span>
           )}
@@ -423,19 +492,30 @@ const OrderCard = ({
               (user-facing). `data-testid` stays on DB `orderId` for stable
               test selectors. Pre-engage cards without `orderNumber` render
               no chip — same width-budget shape as today's `!orderId` branch. */}
-          {orderNumber && !isRoom && !isDineIn && (
+          {/* CR-118: Aggregator cards show aggrId; POS cards show orderNumber */}
+          {(isAggregator ? order.aggrId : orderNumber) && !isRoom && !isDineIn && (
             <span
               data-testid={`order-id-chip-${orderId}`}
               className="text-xs flex-shrink-0"
               style={{ color: COLORS.grayText }}
             >
-              #{orderNumber}
+              #{isAggregator ? order.aggrId : orderNumber}{useToken && dailyToken ? ` · T${dailyToken}` : ''}
+            </span>
+          )}
+          {/* BUG-144: Token chip for dineIn/room orders (orderNumber chip is hidden for these) */}
+          {useToken && dailyToken && (isRoom || isDineIn) && (
+            <span
+              data-testid={`token-chip-${orderId}`}
+              className="text-xs flex-shrink-0"
+              style={{ color: COLORS.grayText }}
+            >
+              T{dailyToken}
             </span>
           )}
         </div>
 
         {/* Center: Amount - Bold + Large */}
-        <span className="font-extrabold text-lg flex-shrink-0 ml-2" style={{ color: COLORS.grayText }}>
+        <span className="font-extrabold text-lg flex-shrink-0 ml-2" style={{ color: getStatusColor(fOrderStatus, COLORS.grayText) }}> {/* CR-433 */}
           ₹{(order.amount || 0).toLocaleString()}
         </span>
 
@@ -566,6 +646,28 @@ const OrderCard = ({
         </div>
       )}
 
+      {/* CR-125: Header Row 4 — Brand name for multi-brand aggregator restaurants.
+          Shown only when isAggregator && brandName non-null. Zero effect on POS cards.
+          Styled as header-zone row (getHeaderBgColor) with SOURCE_COLOR pill. */}
+      {isAggregator && order.brandName && (
+        <div
+          className="px-3 pb-1.5 flex items-center"
+          style={{ backgroundColor: getHeaderBgColor() }}
+          onClick={(e) => e.stopPropagation()}
+          data-testid={`brand-name-strip-${orderId}`}
+        >
+          <span
+            className="text-[10px] font-semibold uppercase tracking-wide px-2 py-0.5 rounded-full"
+            style={{
+              backgroundColor: `${SOURCE_COLORS[source] || '#FC8019'}18`,
+              color: SOURCE_COLORS[source] || '#FC8019',
+            }}
+          >
+            {order.brandName}
+          </span>
+        </div>
+      )}
+
       {/* ── ADDRESS POPUP (own delivery) ── */}
       {showAddress && isDelivery && isOwn && (
         <div 
@@ -583,11 +685,11 @@ const OrderCard = ({
       )}
 
       {/* ── ITEMS SECTION — Compact for Delivery/TakeAway, normal for DineIn ── */}
-      <div className={`px-3 border-b ${isDineIn ? 'py-1.5' : 'py-1'}`} style={{ borderColor: COLORS.borderGray }}>
-        {activeItems.length > 0 ? (
-          activeItems.map((item) => {
-            const actionConfig = getItemActionConfig(item);
-            const statusLabel = item.status === 'preparing' ? 'Preparing' : item.status === 'ready' ? 'Ready' : '';
+      {activeItems.length > 0 && ( // CR-430 OD-430-04: only render items section when active items exist — removes "No active items" block
+        <div className={`px-3 border-b ${isDineIn ? 'py-1.5' : 'py-1'}`} style={{ borderColor: COLORS.borderGray }}>
+          {activeItems.map((item) => {
+            const actionConfig = isAggregator ? null : getItemActionConfig(item); // BUG-255
+            const statusLabel = item.status === 'preparing' ? 'Ready' : item.status === 'ready' ? 'Serve' : ''; // BUG-581: action word (next action) not state label
             
             // Build variants/addons display string
             const variants = item.variation || [];
@@ -596,13 +698,18 @@ const OrderCard = ({
             // Parse variants - handle different structures
             const variantStr = variants.map(v => {
               if (typeof v === 'string') return v;
+              const name = v.name || v.variant_name || v.variant_group || '';
+              // BUG-573: Check for values[] array (backend sends selected options here)
+              if (v.values && Array.isArray(v.values) && v.values.length > 0) {
+                const selected = v.values.map(val => val.label).filter(Boolean).join(', ');
+                if (name && selected) return `${name}: ${selected}`;
+                return selected || name || '';
+              }
               // Check for name + labels array format (e.g., {name: "HALFNHALF", labels: ["Marinara"]})
               if (v.labels && Array.isArray(v.labels) && v.labels.length > 0) {
-                const name = v.name || v.variant_name || v.variant_group || '';
                 return `${name}: ${v.labels.join(', ')}`;
               }
-              // Check for name + value format
-              const name = v.name || v.variant_name || v.variant_group || '';
+              // Check for name + value format (flat field fallback)
               const value = v.value || v.option_label || v.label || v.selected_option || '';
               if (name && value) return `${name}: ${value}`;
               return name || value || '';
@@ -624,7 +731,7 @@ const OrderCard = ({
             const showItemAction = isItemActionable && actionConfig;
             
             return (
-              <div key={item.id} className={isDineIn ? "py-1" : "py-0.5"}>
+              <div key={item.id} className="py-0.5"> {/* CR-433: uniform tighter spacing — was isDineIn?py-1:py-0.5 */}
                 {/* Main item row */}
                 <div className="flex items-center gap-2">
                   {/* Food Transfer icon on LEFT - Dine-In only, permission-gated */}
@@ -643,9 +750,30 @@ const OrderCard = ({
                   )}
                   {/* Item name + qty + details inline - SMALLER, SECONDARY */}
                   <div className="flex-1 min-w-0">
-                    <span className="text-[11px]" style={{ color: COLORS.grayText }}>
-                      {item.name} ({item.qty})
+                    <span className="text-[13px] font-semibold" style={{ color: COLORS.darkText }}> {/* CR-433: bolder+larger item names stand out */}
+                      {/* CR-111: Aggregator items use ● Qty× Name format; POS keeps existing format */}
+                      {isAggregator
+                        ? <>{item.qty}× {item.name}</>
+                        : <>{item.itemCode ? `[${item.itemCode}] ` : ''}{item.name} ({item.qty})</>
+                      }
                     </span>
+                    {/* CR-112: Item price for aggregator orders (permission guard placeholder) */}
+                    {isAggregator && item.unitPrice > 0 && (
+                      <span className="text-[11px] ml-1 font-medium" style={{ color: COLORS.darkText }}>
+                        {currencySymbol}{Number(item.unitPrice).toFixed(2)}
+                      </span>
+                    )}
+                    {/* CR-099: Elapsed prep/serve time per item */}
+                    {item.createdAt && item.status === 'preparing' && (
+                      <span className="ml-1 text-[9px] font-medium" style={{ color: COLORS.primaryOrange }}>
+                        Prep: {formatElapsed(now - new Date(item.createdAt).getTime())}
+                      </span>
+                    )}
+                    {item.readyAt && item.status === 'ready' && (
+                      <span className="ml-1 text-[9px] font-medium" style={{ color: COLORS.primaryGreen }}>
+                        Prep: {formatElapsed(new Date(item.readyAt).getTime() - new Date(item.createdAt).getTime())} · Wait: {formatElapsed(now - new Date(item.readyAt).getTime())}
+                      </span>
+                    )}
                     {/* Variants/Addons inline - Gray italic (subtle) */}
                     {detailsStr && (
                       <div className="text-[9px] leading-tight italic" style={{ color: COLORS.grayText }}>
@@ -686,13 +814,9 @@ const OrderCard = ({
                 </div>
               </div>
             );
-          })
-        ) : (
-          <div className="py-1.5 text-xs" style={{ color: COLORS.grayText }}>
-            No active items
-          </div>
-        )}
-      </div>
+          })}
+        </div>
+      )} {/* CR-430 OD-430-04 end */}
 
       {/* ── SERVED ITEMS COLLAPSED (44px touch target for toggle) ── */}
       {servedItems.length > 0 && (
@@ -713,20 +837,29 @@ const OrderCard = ({
           {showServed && (
             <div className="px-3 pb-2">
               {servedItems.map((item) => (
-                <div key={item.id} className="flex items-center gap-2 py-1.5">
+                <div key={item.id} className="flex items-center gap-2 py-0.5"> {/* CR-430 OD-430-03: tighter row padding */}
                   <div
                     className="w-2 h-2 rounded-full flex-shrink-0"
                     style={{ backgroundColor: COLORS.primaryGreen }}
                   />
                   <span className="flex-1 text-xs" style={{ color: COLORS.grayText }}>
-                    {item.name} ({item.qty})
+                    {item.itemCode ? `[${item.itemCode}] ` : ''}{item.name} ({item.qty})
+                    {/* CR-099: Final prep + serve duration for served items */}
+                    {item.createdAt && ( // BUG-574: two-path running counter — kitchen (readyAt exists) vs no-kitchen (readyAt null)
+                      <span className="text-[9px] ml-1" style={{ color: COLORS.grayText }}>
+                        {item.readyAt ? (
+                          // Kitchen path: Prep (static: cook time) + Serve (running: how long since served)
+                          `Prep: ${formatElapsed(new Date(item.readyAt).getTime() - new Date(item.createdAt).getTime())} · Serve: ${formatElapsed(now - new Date(item.serveAt || item.readyAt).getTime())}`
+                        ) : (
+                          // No-kitchen path: Total (running: how long since punched)
+                          `Total: ${formatElapsed(now - new Date(item.createdAt).getTime())}`
+                        )}
+                      </span>
+                    )}
                   </span>
-                  <span className="text-[10px] flex-shrink-0" style={{ color: COLORS.grayText }}>
-                    Served
-                  </span>
-                  {/* Served checkmark (no action) */}
-                  <div className="min-h-[44px] min-w-[44px] flex items-center justify-center -mr-2">
-                    <Check className="w-5 h-5" style={{ color: COLORS.grayText }} strokeWidth={2.5} />
+                  {/* CR-430 OD-430-03: removed "Served" label (redundant) + shrunk checkmark w-5→w-3 */}
+                  <div className="flex items-center justify-center -mr-2">
+                    <Check className="w-3 h-3" style={{ color: COLORS.grayText }} strokeWidth={2.5} />
                   </div>
                 </div>
               ))}
@@ -754,7 +887,7 @@ const OrderCard = ({
           {showCancelled && (
             <div className="px-3 pb-2">
               {cancelledItems.map((item) => (
-                <div key={item.id} className="flex items-center gap-2 py-1.5">
+                <div key={item.id} className="flex items-center gap-2 py-0.5"> {/* CR-430 OD-430-05: tighter row padding, parity with served rows */}
                   <div
                     className="w-2 h-2 rounded-full flex-shrink-0"
                     style={{ backgroundColor: '#9CA3AF' }}
@@ -764,13 +897,12 @@ const OrderCard = ({
                     className="flex-1 text-xs line-through"
                     style={{ color: '#9CA3AF' }}
                   >
-                    {item.name} ({item.qty})
+                    {item.itemCode ? `[${item.itemCode}] ` : ''}{item.name} ({item.qty})
                   </span>
-                  <span className="text-[10px] flex-shrink-0" style={{ color: '#9CA3AF' }}>
-                    (Cancelled)
-                  </span>
-                  {/* Spacer to align with Served block's checkmark column */}
-                  <div className="min-h-[44px] min-w-[44px] flex items-center justify-center -mr-2" />
+                  {/* CR-430 OD-430-05: removed (Cancelled) label; replaced 44px spacer with tiny × — parity with served ✓ */}
+                  <div className="flex items-center justify-center -mr-2">
+                    <X className="w-3 h-3" style={{ color: '#9CA3AF' }} strokeWidth={2.5} />
+                  </div>
                 </div>
               ))}
             </div>
@@ -779,6 +911,25 @@ const OrderCard = ({
       )}
 
       {/* ── RIDER SECTION (Delivery + Aggregator only) ── */}
+      {/* CR-113: Aggregator customer + phone section (data from UrbanPiper, not CRM) */}
+      {isAggregator && (order.customerName || order.phone) && (
+        <div
+          className="px-3 py-1.5 border-b flex items-center gap-2"
+          style={{ borderColor: COLORS.borderGray }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <span className="text-xs font-medium" style={{ color: COLORS.darkText }}>
+            {order.customerName || 'Customer'}
+          </span>
+          {order.phone && (
+            <span className="text-[11px]" style={{ color: COLORS.grayText }}>
+              {order.phone}
+            </span>
+          )}
+        </div>
+      )}
+
+      {/* Rider Section */}
       {isDelivery && (hasRiderAssigned || !isOwn) && (
         <div
           className="px-3 py-2 border-b flex items-center gap-2"
@@ -892,26 +1043,27 @@ const OrderCard = ({
           </>
         ) : (
           /* Normal flow: [KOT] [Cancel] ... [Ready/Serve/Bill] for ALL order types */
-          <div className="flex items-center w-full">
+          <div className="flex items-center w-full gap-2"> {/* BUG-561 */}
             {/* Left: Print KOT + Cancel */}
-            <div className="flex items-center gap-3">
-              {/* Print KOT button - permission gated (print_icon) */}
-              {/* BUG-097: Hide KOT for delivery orders at dispatch/assign (fOrderStatus 2) and delivered (fOrderStatus 5) states */}
-              {canPrintBill && !(isDelivery && (fOrderStatus === 2 || fOrderStatus === 5)) && (
+            <div className="flex items-center gap-2 min-w-0"> {/* BUG-569 */}
+              {/* CR-118: KOT button — aggregator uses dedicated print endpoint */}
+              {/* CR-120: Aggregator KOT only at fOS=1 (preparing); Bill moves to fOS=2 */}
+              {/* BUG-286: Aggregator print bypasses canPrintBill — uses UrbanPiper API, not POS printer */}
+              {(isAggregator || canPrintBill) && (isAggregator ? (fOrderStatus === 1) : !(isDelivery && (fOrderStatus === 2 || fOrderStatus === 5))) && (
               <button
                 data-testid={`print-kot-btn-${orderId}`}
                 className={`min-h-[44px] min-w-[44px] rounded-lg border flex items-center justify-center ${isActionInProgress ? 'opacity-50' : ''}`}
                 style={{ borderColor: COLORS.borderGray, color: COLORS.darkText }}
                 title="Print KOT"
-                onClick={handlePrintKot}
+                onClick={isAggregator ? (e) => handleAggregatorPrint(e, 'aggr_kot') : handlePrintKot}
                 disabled={isActionInProgress}
               >
                 {isPrintingKot ? <Loader2 className="w-5 h-5 animate-spin" /> : <Printer className="w-5 h-5" />}
               </button>
               )}
 
-              {/* Cancel Order Button - permission gated (order_cancel) */}
-              {isOrderCancelAllowed && (
+              {/* Cancel Order Button - permission gated (order_cancel) — BUG-251: hidden for aggregator */}
+              {!isAggregator && isOrderCancelAllowed && (
               <button
                 data-testid={`cancel-order-btn-${orderId}`}
                 onClick={() => onCancelOrder?.(order)}
@@ -923,8 +1075,8 @@ const OrderCard = ({
               </button>
               )}
 
-              {/* CR-017: WhatsApp Payment Link button */}
-              {showWhatsAppPayment && (
+              {/* CR-017: WhatsApp Payment Link button — BUG-251: hidden for aggregator */}
+              {!isAggregator && showWhatsAppPayment && (
               <button
                 data-testid={`whatsapp-payment-btn-${orderId}`}
                 className={`min-h-[44px] min-w-[44px] rounded-lg border flex items-center justify-center ${isActionInProgress ? 'opacity-50' : ''}`}
@@ -940,14 +1092,46 @@ const OrderCard = ({
               )}
             </div>
 
-            {/* Spacer */}
-            <div className="flex-1" />
-
             {/* Right: Action button */}
-            {fOrderStatus === 1 && (
+            {/* CR-106: Aggregator-specific actions (Ready/Dispatch via UrbanPiper API) */}
+            {isAggregator && fOrderStatus === 1 && (
+              <button
+                data-testid={`agg-ready-btn-${orderId}`}
+                className={`min-h-[44px] flex-1 min-w-0 px-2 text-sm font-bold rounded-lg flex items-center justify-center gap-2`}
+                style={{ backgroundColor: `${SOURCE_COLORS[source] || '#FC8019'}15`, color: SOURCE_COLORS[source] || '#FC8019', border: `1px solid ${SOURCE_COLORS[source] || '#FC8019'}` }}
+                onClick={(e) => { e.stopPropagation(); onAggregatorReady?.(order); }}
+              >
+                Mark Ready
+              </button>
+            )}
+            {/* BUG-285: "Ready to Dispatch" as status label, not interactive button */}
+            {isAggregator && fOrderStatus === 2 && (
+              <span
+                data-testid={`agg-dispatch-label-${orderId}`}
+                className="min-h-[44px] flex-1 min-w-0 px-2 text-sm font-bold rounded-lg flex items-center justify-center gap-2"
+                style={{ backgroundColor: `${SOURCE_COLORS[source] || '#FC8019'}10`, color: SOURCE_COLORS[source] || '#FC8019' }}
+              >
+                Ready to Dispatch
+              </span>
+            )}
+            {/* CR-120: Aggregator Bill only at fOS=2 (ready) — BUG-286: no canPrintBill gate for aggregator */}
+            {isAggregator && fOrderStatus === 2 && (
+              <button
+                data-testid={`agg-bill-btn-${orderId}`}
+                className={`min-h-[44px] px-4 text-sm font-bold rounded-lg flex items-center justify-center gap-1 ${isActionInProgress ? 'opacity-50' : ''}`}
+                style={{ backgroundColor: '#E8F5E9', color: COLORS.primaryGreen, border: `1px solid ${COLORS.primaryGreen}` }}
+                onClick={(e) => handleAggregatorPrint(e, 'aggr_bill')}
+                disabled={isActionInProgress}
+              >
+                {isPrintingBill ? <Loader2 className="w-4 h-4 animate-spin" /> : <Printer className="w-4 h-4" />}
+                <span>Bill</span>
+              </button>
+            )}
+            {/* POS actions — hidden for aggregator orders (CR-106: payment handled externally) */}
+            {!isAggregator && fOrderStatus === 1 && (
               <button
                 data-testid={`ready-btn-${orderId}`}
-                className={`min-h-[44px] px-6 text-sm font-bold rounded-lg flex items-center justify-center gap-2 ${isActionInProgress ? 'opacity-50 cursor-not-allowed' : ''}`}
+                className={`min-h-[44px] flex-1 min-w-0 px-2 text-sm font-bold rounded-lg flex items-center justify-center gap-2 ${isActionInProgress ? 'opacity-50 cursor-not-allowed' : ''}`}
                 style={{ backgroundColor: "#FFF3E8", color: COLORS.primaryOrange, border: `1px solid ${COLORS.primaryOrange}` }}
                 onClick={handleMarkReadyClick}
                 disabled={isActionInProgress}
@@ -955,7 +1139,7 @@ const OrderCard = ({
                 {isMarkingReady ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Ready'}
               </button>
             )}
-            {fOrderStatus === 2 && (
+            {!isAggregator && fOrderStatus === 2 && (
               isDelivery ? (
                 // BUG-097: Delivery-specific branching at fOrderStatus 2
                 !hasRiderAssigned ? (
@@ -964,7 +1148,7 @@ const OrderCard = ({
                   deliveryAssign ? (
                     <button
                       data-testid={`assign-rider-btn-${orderId}`}
-                      className={`min-h-[44px] px-6 text-sm font-bold rounded-lg flex items-center justify-center gap-2 ${isActionInProgress ? 'opacity-50 cursor-not-allowed' : ''}`}
+                      className={`min-h-[44px] flex-1 min-w-0 px-2 text-sm font-bold rounded-lg flex items-center justify-center gap-2 ${isActionInProgress ? 'opacity-50 cursor-not-allowed' : ''}`}
                       style={{ backgroundColor: "#FFF3E8", color: COLORS.primaryOrange, border: `1px solid ${COLORS.primaryOrange}` }}
                       onClick={() => setShowAssignRider(true)}
                       disabled={isActionInProgress}
@@ -974,7 +1158,7 @@ const OrderCard = ({
                   ) : (
                     <button
                       data-testid={`dispatch-btn-${orderId}`}
-                      className={`min-h-[44px] px-6 text-sm font-bold rounded-lg flex items-center justify-center gap-2 ${isActionInProgress ? 'opacity-50 cursor-not-allowed' : ''}`}
+                      className={`min-h-[44px] flex-1 min-w-0 px-2 text-sm font-bold rounded-lg flex items-center justify-center gap-2 ${isActionInProgress ? 'opacity-50 cursor-not-allowed' : ''}`}
                       style={{ backgroundColor: "#FFF3E8", color: COLORS.primaryOrange, border: `1px solid ${COLORS.primaryOrange}` }}
                       onClick={handleDispatch}
                       disabled={isActionInProgress}
@@ -984,21 +1168,22 @@ const OrderCard = ({
                   )
                 ) : (
                   // BUG-097 (2026-05-21): branch on rider acceptance state.
-                  // - riderStatus === 'riderAssigned' → disabled "Waiting for Rider" (pending accept)
+                  // - riderStatus === 'riderAssigned' → waiting (pending accept) — BUG-370: now clickable to allow reassign
                   // - any other state (e.g. 'dispatched' = rider picked up) → clickable "Reassign"
                   order.riderStatus === 'riderAssigned' ? (
                     <button
                       data-testid={`waiting-rider-btn-${orderId}`}
-                      className="min-h-[44px] px-6 text-sm font-bold rounded-lg flex items-center justify-center gap-2 opacity-50 cursor-default"
+                      className={`min-h-[44px] flex-1 min-w-0 px-2 text-sm font-bold rounded-lg flex items-center justify-center gap-2 ${isActionInProgress ? 'opacity-50 cursor-not-allowed' : ''}`}
                       style={{ backgroundColor: "#FFF3E8", color: COLORS.primaryOrange, border: `1px solid ${COLORS.primaryOrange}` }}
-                      disabled
+                      onClick={() => setShowAssignRider(true)}
+                      disabled={isActionInProgress}
                     >
-                      Waiting for Rider
+                      Reassign
                     </button>
                   ) : (
                     <button
                       data-testid={`reassign-rider-btn-${orderId}`}
-                      className={`min-h-[44px] px-6 text-sm font-bold rounded-lg flex items-center justify-center gap-2 ${isActionInProgress ? 'opacity-50 cursor-not-allowed' : ''}`}
+                      className={`min-h-[44px] flex-1 min-w-0 px-2 text-sm font-bold rounded-lg flex items-center justify-center gap-2 ${isActionInProgress ? 'opacity-50 cursor-not-allowed' : ''}`}
                       style={{ backgroundColor: "#FFF3E8", color: COLORS.primaryOrange, border: `1px solid ${COLORS.primaryOrange}` }}
                       onClick={() => setShowAssignRider(true)}
                       disabled={isActionInProgress}
@@ -1011,7 +1196,7 @@ const OrderCard = ({
                 // Non-delivery: Serve button (unchanged)
                 <button
                   data-testid={`serve-btn-${orderId}`}
-                  className={`min-h-[44px] px-6 text-sm font-bold rounded-lg flex items-center justify-center gap-2 ${isActionInProgress ? 'opacity-50 cursor-not-allowed' : ''}`}
+                  className={`min-h-[44px] flex-1 min-w-0 px-2 text-sm font-bold rounded-lg flex items-center justify-center gap-2 ${isActionInProgress ? 'opacity-50 cursor-not-allowed' : ''}`}
                   style={{ backgroundColor: "#E8F5E9", color: COLORS.primaryGreen, border: `1px solid ${COLORS.primaryGreen}` }}
                   onClick={handleMarkServedClick}
                   disabled={isActionInProgress}
@@ -1020,26 +1205,51 @@ const OrderCard = ({
                 </button>
               )
             )}
-            {fOrderStatus === 5 && canBill && (
+            {/* BUG-557: delivery at fOS=5 with no rider assigned — show Assign/Dispatch first.
+                Fires when Default Order Status = "Bill" sends orders directly to fOS=5,
+                bypassing fOS=2 where the normal Assign window lives. */}
+            {!isAggregator && fOrderStatus === 5 && isDelivery && !hasRiderAssigned && (
+              deliveryAssign ? (
+                <button
+                  data-testid={`assign-rider-btn-${orderId}`}
+                  className={`min-h-[44px] flex-1 min-w-0 px-2 text-sm font-bold rounded-lg flex items-center justify-center gap-2 ${isActionInProgress ? 'opacity-50 cursor-not-allowed' : ''}`}
+                  style={{ backgroundColor: "#FFF3E8", color: COLORS.primaryOrange, border: `1px solid ${COLORS.primaryOrange}` }}
+                  onClick={() => setShowAssignRider(true)}
+                  disabled={isActionInProgress}
+                >
+                  Assign Rider
+                </button>
+              ) : (
+                <button
+                  data-testid={`dispatch-btn-${orderId}`}
+                  className={`min-h-[44px] flex-1 min-w-0 px-2 text-sm font-bold rounded-lg flex items-center justify-center gap-2 ${isActionInProgress ? 'opacity-50 cursor-not-allowed' : ''}`}
+                  style={{ backgroundColor: "#FFF3E8", color: COLORS.primaryOrange, border: `1px solid ${COLORS.primaryOrange}` }}
+                  onClick={handleDispatch}
+                  disabled={isActionInProgress}
+                >
+                  {isDispatching ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Dispatch'}
+                </button>
+              )
+            )}
+            {!isAggregator && fOrderStatus === 5 && canBill && (!isDelivery || hasRiderAssigned) && ( // BUG-557: gate Bill behind rider assignment for delivery
               // BUG-097 (2026-05-21): delivery + rider picked up (riderStatus='dispatched')
               //   ⇒ passive "Rider is on the way" label; no Bill/Settle until handover.
               //   Handover-complete exit signal is backend-blocked (Bucket 5).
               isDelivery && order.riderStatus === 'dispatched' ? (
                 <button
                   data-testid={`rider-on-the-way-btn-${orderId}`}
-                  className="min-h-[44px] px-6 text-sm font-bold rounded-lg flex items-center justify-center gap-2 opacity-50 cursor-default"
+                  className="min-h-[44px] flex-1 min-w-0 px-2 text-sm font-bold rounded-lg flex items-center justify-center gap-2 opacity-50 cursor-default"
                   style={{ backgroundColor: "#FFF3E8", color: COLORS.primaryOrange, border: `1px solid ${COLORS.primaryOrange}` }}
                   disabled
                 >
                   Rider is on the way
                 </button>
               ) : order.paymentType === 'prepaid' ? (
-                // PROD-BUG-001: hide Settle when auto-settle is ON + non-PayLater
-                // (auto-settle useEffect in DashboardPage handles the API call)
-                (order.paymentMethod?.toLowerCase() === 'paylater' || !(() => { try { return localStorage.getItem('mygenie_auto_settle_enabled') === 'true'; } catch(_) { return false; } })()) && (
+                // BUG-273: auto-settle localStorage condition removed — Settle button always visible
+                (
                 <button
                   data-testid={`settle-btn-${orderId}`}
-                  className={`min-h-[44px] px-6 text-sm font-bold rounded-lg ${isSettling ? 'opacity-50' : ''}`}
+                  className={`min-h-[44px] flex-1 min-w-0 px-2 text-sm font-bold rounded-lg flex items-center justify-center gap-2 ${isSettling ? 'opacity-50' : ''}`}
                   style={{ backgroundColor: COLORS.primaryGreen, color: "white" }}
                   onClick={handleSettlePrepaid}
                   disabled={isSettling}
@@ -1051,7 +1261,7 @@ const OrderCard = ({
               ) : (
                 <button
                   data-testid={`bill-btn-${orderId}`}
-                  className={`min-h-[44px] px-6 text-sm font-bold rounded-lg ${isPrintingBill ? 'opacity-50' : ''}`}
+                  className={`min-h-[44px] flex-1 min-w-0 px-2 text-sm font-bold rounded-lg flex items-center justify-center gap-2 ${isPrintingBill ? 'opacity-50' : ''}`}
                   style={{ backgroundColor: COLORS.primaryGreen, color: "white" }}
                   onClick={handlePrintBill}
                   disabled={isPrintingBill}

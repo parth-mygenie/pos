@@ -11,6 +11,17 @@ class ErrorBoundary extends React.Component {
   }
 
   static getDerivedStateFromError(error) {
+    // BUG-597: ChunkLoadError = a hashed JS chunk 404'd after a new deploy.
+    // Auto-reload once. The ?retry=1 guard prevents an infinite reload loop.
+    const isChunkError =
+      error?.name === 'ChunkLoadError' ||
+      error?.message?.includes('Loading chunk') ||
+      error?.message?.includes('Loading CSS chunk');
+    if (isChunkError && !window.location.search.includes('retry=1')) {
+      const sep = window.location.search ? '&' : '?';
+      window.location.replace(window.location.href + sep + 'retry=1');
+      return { hasError: false, error: null }; // reload in progress — suppress red screen
+    }
     return { hasError: true, error };
   }
 

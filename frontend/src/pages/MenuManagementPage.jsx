@@ -4,11 +4,14 @@ import MenuManagementPanel from "../components/panels/MenuManagementPanel";
 
 // CR-041: Menu Management as full-page route (was panel overlay on Dashboard)
 const MenuManagementPage = () => {
-  const [isSidebarExpanded, setIsSidebarExpanded] = useState(false);
+  // BUG-361: persist sidebar state across reloads
+  const [isSidebarExpanded, setIsSidebarExpanded] = useState(
+    () => localStorage.getItem('mygenie_sidebar_expanded') === 'true'
+  );
 
   return (
     <div className="flex h-screen" data-testid="menu-management-page">
-      <Sidebar isExpanded={isSidebarExpanded} setIsExpanded={setIsSidebarExpanded} />
+      <Sidebar isExpanded={isSidebarExpanded} setIsExpanded={(v) => { setIsSidebarExpanded(v); localStorage.setItem('mygenie_sidebar_expanded', String(v)); }} />
       <MenuManagementPanel
         isOpen={true}
         onClose={() => window.history.back()}

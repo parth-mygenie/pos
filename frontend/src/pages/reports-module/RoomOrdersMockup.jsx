@@ -240,7 +240,10 @@ const RoomOrdersMockup = () => {
   const { getTableById } = useTables();
   const schedules = useMemo(() => restaurant?.schedules || [], [restaurant?.schedules]);
   const downloadRef = useRef(null);
-  const [isSidebarExpanded, setIsSidebarExpanded] = useState(false);
+  // BUG-361: persist sidebar state across reloads
+  const [isSidebarExpanded, setIsSidebarExpanded] = useState(
+    () => localStorage.getItem('mygenie_sidebar_expanded') === 'true'
+  );
   const [isSilentMode, setIsSilentMode] = useState(false);
 
   // Date range — default last 7 days
@@ -484,7 +487,7 @@ const RoomOrdersMockup = () => {
   return (
     <div className="flex h-screen bg-white" data-testid="room-orders-insights-page">
       <Sidebar
-        isExpanded={isSidebarExpanded} setIsExpanded={setIsSidebarExpanded}
+        isExpanded={isSidebarExpanded} setIsExpanded={(v) => { setIsSidebarExpanded(v); localStorage.setItem('mygenie_sidebar_expanded', String(v)); }}
         isSilentMode={isSilentMode} setIsSilentMode={setIsSilentMode}
         onOpenSettings={() => {}} onOpenMenu={() => {}} onOpenCredit={() => {}}
         onRefresh={() => {}} isRefreshing={false} isOrderEntryOpen={false}
@@ -492,7 +495,7 @@ const RoomOrdersMockup = () => {
 
       <main className="flex-1 flex flex-col overflow-hidden bg-zinc-50">
         {/* ── Header (S7 pattern) ─────────────────────────────────── */}
-        <header className="flex items-center justify-between px-8 py-5 bg-white border-b border-zinc-200 shrink-0" data-testid="room-orders-header">
+        <header className="flex items-center justify-between px-8 py-5 bg-white border-b border-zinc-200 shrink-0 flex-wrap gap-y-3" data-testid="room-orders-header"> {/* BUG-555 */}
           <div className="flex items-center gap-4">
             <button className="p-2 hover:bg-zinc-100 rounded-lg transition-colors" data-testid="back-to-dashboard" onClick={() => navigate('/reports-module/dashboard')}>
               <ArrowLeft className="w-5 h-5 text-zinc-600" />
@@ -502,7 +505,7 @@ const RoomOrdersMockup = () => {
             </h1>
           </div>
 
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-3 flex-wrap">
             {/* Date range — bordered container with FROM/TO labels */}
             <div className={`flex items-center gap-2 px-3 py-2 border ${draftDirty && draftValid && !draftRangeExceeded ? 'border-[#F26B33]' : draftRangeExceeded ? 'border-red-400' : 'border-zinc-200'} bg-white rounded-lg ${isLoading ? 'opacity-50' : ''}`} data-testid="room-daterange">
               <CalendarIcon className="w-4 h-4 text-zinc-500" />
@@ -577,7 +580,7 @@ const RoomOrdersMockup = () => {
                     <BarChart data={chartData.daily} barSize={28}>
                       <CartesianGrid strokeDasharray="3 3" stroke="#f4f4f5" />
                       <XAxis dataKey="date" tick={{ fontSize: 11, fill: '#71717a' }} />
-                      <YAxis tick={{ fontSize: 11, fill: '#71717a' }} tickFormatter={(v) => `\u20B9${(v/1000).toFixed(0)}k`} />
+                      <YAxis tick={{ fontSize: 11, fill: '#71717a' }} tickFormatter={(v) => v >= 1000 ? `\u20B9${(v/1000).toFixed(1)}k` : `\u20B9${Math.round(v)}`} /* BUG-415 */ />
                       <Tooltip formatter={(v, name) => [`\u20B9${v.toLocaleString('en-IN')}`, name]} contentStyle={{ borderRadius: '8px', border: '1px solid #e4e4e7', fontSize: '12px' }} />
                       <Legend wrapperStyle={{ fontSize: '11px' }} />
                       <Bar dataKey="lodging" stackId="a" fill={BAR_COLORS[0]} name="Lodging" />

@@ -60,6 +60,11 @@ export const fromAPI = {
       walletBalance: api.wallet_balance || 0,
       lastVisit:     api.last_visit || null,
       loyalty:       buildSyntheticLoyalty({ tier, totalPoints, pointsValue }),
+      // CR-128 G1a: B2B fields from CRM search (CRM-4 verified)
+      customerType:  api.customer_type || 'normal',
+      isB2b:         api.is_b2b || false,
+      gstName:       api.gst_name || null,
+      gstNumber:     api.gst_number || null,
     };
   },
 
@@ -93,6 +98,12 @@ export const fromAPI = {
     favorites:     api.favorites || [],
     lastVisit:     api.last_visit || null,
     addresses:     (api.addresses || []).map(fromAPI.address),
+    // CR-128 G1b: B2B fields from CRM customer-lookup (validated live)
+    customerType:  api.customer_type || 'normal',
+    isB2b:         api.is_b2b || false,
+    gstName:       api.gst_name || null,
+    gstNumber:     api.gst_number || null,
+    documents:     api.documents || {},
     // BUG-108 Phase B + Loyalty Pipeline Fix (2026-05-23):
     // customer-lookup endpoint returns flat loyalty fields only — build the
     // synthetic loyalty blob via the shared helper so searchResult and
@@ -129,6 +140,11 @@ export const fromAPI = {
     // Convenience: extract loyalty_enabled for UI gating
     loyaltyEnabled: api.loyalty?.loyalty_enabled ?? null,
     recentOrders:  api.recent_orders || [],
+    // CR-128 G1c: B2B fields (defensive — may not be present on detail endpoint yet)
+    customerType:  api.customer_type || 'normal',
+    isB2b:         api.is_b2b || false,
+    gstName:       api.gst_name || null,
+    gstNumber:     api.gst_number || null,
   }),
 
   /**
@@ -173,18 +189,27 @@ export const fromAPI = {
     // Place-order payload consumes `selectedAddress.id` → must resolve to a valid numeric id,
     // otherwise payload falls back to `address_id: null` and backend cannot attach the address
     // (downstream symptoms: delivery card "No address", edit screen "Tap to select delivery address").
-    id:                api.pos_address_id || api.id || api.address_id || '',
-    posAddressId:      api.pos_address_id || null,
-    address:           api.address || '',
-    city:              api.city || '',
-    state:             api.state || '',
-    pincode:           api.pincode || '',
-    country:           api.country || 'India',
-    latitude:          api.latitude || '',
-    longitude:         api.longitude || '',
-    addressType:       api.address_type || 'Home',
-    lastUsedAt:        api.last_used_at || null,
-    sourceRestaurant:  api.source_restaurant || '',
+    id:                   api.pos_address_id || api.id || api.address_id || '',
+    posAddressId:         api.pos_address_id || null,
+    address:              api.address || '',
+    // BUG-395 addendum-2: house/floor/road were absent — CRM returns them but transform dropped
+    // them silently. selectedAddress.house/floor landed as undefined → buildDeliveryAddress sent
+    // null to backend; buildBillPrintPayload emitted '' for deliveryCustHouse/deliveryCustFloor.
+    // Fix: mirror the full field set from fromAPI.address. Evidence: evidence/BUG-395/.
+    house:                api.house || '',
+    floor:                api.floor || '',
+    road:                 api.road  || '',
+    city:                 api.city  || '',
+    state:                api.state || '',
+    pincode:              api.pincode || '',
+    country:              api.country || 'India',
+    latitude:             api.latitude || '',
+    longitude:            api.longitude || '',
+    addressType:          api.address_type || 'Home',
+    contactPersonName:    api.contact_person_name || '',
+    contactPersonNumber:  api.contact_person_number || '',
+    lastUsedAt:           api.last_used_at || null,
+    sourceRestaurant:     api.source_restaurant || '',
   }),
 
   crossRestaurantAddresses: (addresses) => {
@@ -201,7 +226,7 @@ export const toAPI = {
    * Create customer payload
    * Endpoint: POST /pos/customers
    */
-  createCustomer: ({ name, phone, email, dob, anniversary, gender, countryCode, customerType, addresses }) => {
+  createCustomer: ({ name, phone, email, dob, anniversary, gender, countryCode, customerType, addresses, gstName, gstNumber, isB2b }) => {
     const payload = {
       pos_id: 'mygenie',
       restaurant_id: '',  // Set at call site from restaurant context
@@ -214,6 +239,10 @@ export const toAPI = {
     if (gender) payload.gender = gender;
     if (countryCode) payload.country_code = countryCode;
     if (customerType) payload.customer_type = customerType;
+    // CR-128 G2a: B2B fields to CRM (validated: POST /pos/customers accepts these)
+    if (gstName) payload.gst_name = gstName;
+    if (gstNumber) payload.gst_number = gstNumber;
+    if (isB2b != null) payload.is_b2b = isB2b;
     if (addresses?.length) payload.addresses = addresses;
     return payload;
   },
@@ -222,7 +251,7 @@ export const toAPI = {
    * Update customer payload
    * Endpoint: PUT /pos/customers/{id}
    */
-  updateCustomer: ({ phone, name, email, dob, anniversary }) => {
+  updateCustomer: ({ phone, name, email, dob, anniversary, gstName, gstNumber, isB2b }) => {
     const payload = {
       pos_id: 'mygenie',
       restaurant_id: '',  // Set at call site
@@ -232,6 +261,10 @@ export const toAPI = {
     if (email) payload.email = email;
     if (dob) payload.dob = dob;
     if (anniversary) payload.anniversary = anniversary;
+    // CR-128 G2b: B2B fields to CRM (validated: PUT /pos/customers/{id} accepts these)
+    if (gstName) payload.gst_name = gstName;
+    if (gstNumber) payload.gst_number = gstNumber;
+    if (isB2b != null) payload.is_b2b = isB2b;
     return payload;
   },
 

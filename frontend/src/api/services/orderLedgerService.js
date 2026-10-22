@@ -82,14 +82,14 @@ const toLedgerRow = (o) => {
     walletUsed: 0, loyaltyUsed: 0,
     discount: o.discountAmount || 0,
     discountCategory: o.couponCode ? 'Coupon' : '',
-    discountFor: o.discountAmount > 0 ? 'Customer' : '',
+    discountFor: o.discount_for || (o.discountAmount > 0 ? 'Customer' : ''),  // CR-137: prefer API field; fallback 'Customer'
     roundOff: o.roundOff || 0,
     totalAmount,
-    cashAmount: pm === 'cash' ? amt : 0,
-    cardAmount: pm === 'card' ? amt : 0,
-    upiAmount: pm === 'upi' || pm === 'razorpay' ? amt : 0,
+    cashAmount: o.cashAmount || (pm === 'cash' ? amt : 0),       // BUG-272: prefer transform's partial leg, fallback to single-method
+    cardAmount: o.cardAmount || (pm === 'card' ? amt : 0),       // BUG-272
+    upiAmount: o.upiAmount || (pm === 'upi' || pm === 'razorpay' ? amt : 0), // BUG-272
     tabAmount: pm === 'tab' || pm === 'transfertoroom' ? amt : 0,
-    zomatoGold: 0, partialPayment: 0,
+    zomatoGold: 0, partialPayment: o.partialPayment || 0,         // BUG-272: preserve transform's concat string
     contactName: o.customer && o.customer !== 'Guest' ? o.customer : '',
     contactNumber: o.customerPhone || '', dob: '', anniversary: '',
     addressType: '', area: o.deliveryAddress?.subLocality || '', pincode: '', completeAddress: [o.deliveryAddress?.line1, o.deliveryAddress?.subLocality, o.deliveryAddress?.city].filter(Boolean).join(', '),

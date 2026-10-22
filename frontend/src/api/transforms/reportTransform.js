@@ -188,6 +188,9 @@ export const reportFromAPI = {
       platform: null, // GAP-002: missing from this endpoint
       orderType: api.order_type || null,
       transactionRef: api.transection_id || api.transaction_id || '',
+      // CR-165: Razorpay PG detection — confirmed in paid-order-list schema 2026-08-26
+      razorpayOrderId:       api.razorpay_order_id       || null,
+      razorpayPaymentStatus: api.razorpay_payment_status || null,
       // Raw API data for debugging
       ...(process.env.NODE_ENV === 'development' ? { _raw: api } : {}),
     };
@@ -206,7 +209,7 @@ export const reportFromAPI = {
       customer: api.user_name || 'Guest',
       customerContact: extractCustomerContact(api),
       waiter: api.waiter_name || '',
-      table: location.display,
+      table: api.table_name || api.table_no || location.display, // CR-156: backend now returns table_name in cancel-order-list
       tableId: location.tableId,
       orderIn: location.orderIn,
       roomId: location.roomId,
@@ -225,6 +228,9 @@ export const reportFromAPI = {
       platform: api.order_type === 'pos' ? 'pos' : null, // order_type mixes channel+platform
       orderType: api.order_type || null,
       transactionRef: api.transection_id || api.transaction_id || '',
+      // CR-165: Razorpay PG detection — confirmed in cancel-order-list schema 2026-08-26
+      razorpayOrderId:       api.razorpay_order_id       || null,
+      razorpayPaymentStatus: api.razorpay_payment_status || null,
       // Cancelled-specific fields
       // BE-1 P3 wired 2026-05-01 — canonical key is `cancellation_reason`.
       // No fallback; UI layer owns placeholder.
@@ -742,6 +748,8 @@ const parseOrderItem = (item) => {
     quantity: item.quantity || 0,
     unitPrice: parseFloat(item.unit_price) || 0,
     price: parseFloat(item.price) || 0,
+    addonTotal:     parseFloat(item.total_add_on_price)     || 0, // BUG-296-R2: OD-1 addon revenue
+    variationTotal: parseFloat(item.total_variation_price)  || 0, // BUG-296-R2: OD-1 variation revenue
     isVeg: food.veg === 1,
     isEgg: food.egg === 1,
     image: food.image || null,
@@ -785,6 +793,7 @@ const parseOrderItem = (item) => {
     gstAmount: (parseFloat(item.gst_tax_amount) || 0) - (parseFloat(item.vat_tax_amount) || 0),
     vatAmount: parseFloat(item.vat_tax_amount) || 0,
     discountAmount: parseFloat(item.discount_amount) || 0,
+    discountOnFood: parseFloat(item.discount_on_food) || 0, // BUG-296: item-level discount (discount_amount is always 0; discount_on_food has the real value)
     serviceCharge: parseFloat(item.service_charge) || 0,
   };
 };
@@ -838,6 +847,14 @@ export const orderLogsReportRow = (orderWrapper, activeSrmIds = null) => {
   const api = orderWrapper.orders_table || {};
   const customerDetails = orderWrapper.customer_details || {};
   const toNum = (val) => parseFloat(val) || 0;
+
+  // BUG-272: Parse partial payment legs
+  const partialPayments = orderWrapper.partial_payments || [];
+  const partialMap = {};
+  partialPayments.forEach(p => {
+    const mode = (p.payment_mode || '').toLowerCase();
+    partialMap[mode] = (partialMap[mode] || 0) + parseFloat(p.amount || 0);
+  });
 
   // === Location ===
   const orderIn = api.order_in || null;
@@ -1087,6 +1104,14 @@ export const orderLogsReportRow = (orderWrapper, activeSrmIds = null) => {
     // --- NEW: Flags ---
     isCancelled,
     isMerged,
+
+    // BUG-272: Partial payment breakdown + single-method amounts
+    cashAmount: partialMap.cash || (paymentMethod?.toLowerCase() === 'cash' ? toNum(api.order_amount) : 0),
+    cardAmount: partialMap.card || (paymentMethod?.toLowerCase() === 'card' ? toNum(api.order_amount) : 0),
+    upiAmount: partialMap.upi || (paymentMethod?.toLowerCase() === 'upi' ? toNum(api.order_amount) : 0),
+    partialPayment: partialPayments.length > 1
+      ? partialPayments.map(p => `${p.payment_mode}: ₹${p.amount}`).join(' + ')
+      : '',
 
     // --- NEW: Parsed items ---
     items,

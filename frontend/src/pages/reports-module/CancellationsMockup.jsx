@@ -163,7 +163,10 @@ const CancellationsMockup = () => {
   const schedules = restaurant?.schedules || [];
   const downloadRef = useRef(null);
 
-  const [isSidebarExpanded, setIsSidebarExpanded] = useState(false);
+  // BUG-361: persist sidebar state across reloads
+  const [isSidebarExpanded, setIsSidebarExpanded] = useState(
+    () => localStorage.getItem('mygenie_sidebar_expanded') === 'true'
+  );
   const [showDownloadMenu, setShowDownloadMenu] = useState(false);
   const [activeScope, setActiveScope] = useState('all');
 
@@ -186,7 +189,7 @@ const CancellationsMockup = () => {
   // Date guards (S5 pattern)
   const draftDirty = fromDate !== appliedFrom || toDate !== appliedTo;
   const draftValid = fromDate && toDate && fromDate <= toDate;
-  const MAX_RANGE_DAYS = 62;
+  const MAX_RANGE_DAYS = 730; // BUG-353: lifted from 365 — backend-agg endpoint (insights-cancellations) has no cap
   const draftRangeExceeded = draftValid && ((new Date(toDate) - new Date(fromDate)) / 86400000) > MAX_RANGE_DAYS;
   const datesValid = appliedFrom && appliedTo && appliedFrom <= appliedTo;
   const canApply = draftDirty && draftValid && !draftRangeExceeded;
@@ -198,8 +201,18 @@ const CancellationsMockup = () => {
     const t = new Date(); let f;
     if (p === 'Today') f = t;
     else if (p === '7D') f = new Date(t.getTime() - 6 * 86400000);
-    else if (p === '30D') f = new Date(t.getTime() - 29 * 86400000);
+    else if (p === 'LM') {
+      const now = new Date();
+      const lf = fmtISO(new Date(now.getFullYear(), now.getMonth() - 1, 1));
+      const lt = fmtISO(new Date(now.getFullYear(), now.getMonth(), 0));
+      setFromDate(lf); setToDate(lt); setAppliedFrom(lf); setAppliedTo(lt); setActivePreset(p); // CR-422
+      return;
+    }
     else if (p === 'MTD') { f = new Date(t.getFullYear(), t.getMonth(), 1); }
+    else if (p === 'FY') { // INV-001: last completed FY (Apr 1 → Mar 31)
+      const fyEndYear = t.getMonth() >= 3 ? t.getFullYear() : t.getFullYear() - 1;
+      f = new Date(fyEndYear - 1, 3, 1); t = new Date(fyEndYear, 2, 31);
+    }
     else return;
     const fd = fmtISO(f); const td = fmtISO(t);
     setFromDate(fd); setToDate(td); setAppliedFrom(fd); setAppliedTo(td); setActivePreset(p);
@@ -329,13 +342,13 @@ const CancellationsMockup = () => {
 
   return (
     <div className="flex h-screen bg-white font-sans" data-testid="cancellations-page">
-      <Sidebar isExpanded={isSidebarExpanded} setIsExpanded={setIsSidebarExpanded} onOpenSettings={() => {}} onOpenMenu={() => {}} onOpenCredit={() => {}} onRefresh={() => {}} isRefreshing={false} isOrderEntryOpen={false} />
+      <Sidebar isExpanded={isSidebarExpanded} setIsExpanded={(v) => { setIsSidebarExpanded(v); localStorage.setItem('mygenie_sidebar_expanded', String(v)); }} onOpenSettings={() => {}} onOpenMenu={() => {}} onOpenCredit={() => {}} onRefresh={() => {}} isRefreshing={false} isOrderEntryOpen={false} />
 
       <div className="flex-1 flex overflow-hidden">
         <main className="flex-1 flex flex-col overflow-hidden bg-zinc-50">
 
           {/* ── FIX 2: Header — S5 pattern (orange draft border, green Apply, FY preset, loading states) ── */}
-          <header className="flex items-center justify-between px-8 py-5 bg-white border-b border-zinc-200 shrink-0" data-testid="cancellations-header">
+          <header className="flex items-center justify-between px-8 py-5 bg-white border-b border-zinc-200 shrink-0 flex-wrap gap-y-3" data-testid="cancellations-header"> {/* BUG-555 */}
             <div className="flex items-center gap-4">
               <button className="p-2 hover:bg-zinc-100 rounded-lg transition-colors" data-testid="cancellations-back-btn" onClick={() => navigate('/reports-module/dashboard')}>
                 <ArrowLeft className="w-5 h-5 text-zinc-600" />
@@ -358,7 +371,7 @@ const CancellationsMockup = () => {
               </div>
             </div>
 
-            <div className="flex items-center gap-3">
+            <div className="flex items-center gap-3 flex-wrap">
               {/* Date Range Picker — orange border when draft dirty (S5 pattern) */}
               <div
                 className={`flex items-center gap-2 px-3 py-2 border ${
@@ -378,7 +391,7 @@ const CancellationsMockup = () => {
                   <input type="date" value={toDate} onChange={(e) => setToDate(e.target.value)} disabled={isLoading} max={fmtISO(today)} className="bg-transparent border-0 outline-none text-sm font-medium text-zinc-800 cursor-pointer focus:ring-0 p-0" data-testid="cancellations-date-to" />
                 </label>
                 {draftRangeExceeded && (
-                  <span className="text-[10px] text-red-500 font-medium whitespace-nowrap">Max 2 months</span>
+                  <span className="text-[10px] text-red-500 font-medium whitespace-nowrap">Max 1 year</span>
                 )}
               </div>
 
@@ -399,8 +412,8 @@ const CancellationsMockup = () => {
 
               {/* Quick range presets — S5 pattern with FY disabled */}
               <div className={`flex items-center gap-1 px-1.5 py-1 bg-zinc-100 rounded-lg ${isLoading ? 'opacity-50' : ''}`} data-testid="cancellations-presets">
-                {['Today', '7D', '30D', 'MTD', 'FY'].map((p) => {
-                  const isDisabled = p === 'FY';
+                {['Today', '7D', 'LM', 'MTD', 'FY'].map((p) => {
+                  const isDisabled = false; // INV-001: FY enabled
                   return (
                     <button
                       key={p}
@@ -414,7 +427,7 @@ const CancellationsMockup = () => {
                       }`}
                       data-testid={`cancellations-preset-${p.toLowerCase()}`}
                       onClick={() => !isDisabled && handlePreset(p)}
-                      title={isDisabled ? 'Coming soon — max range is 2 months' : ''}
+                      title={isDisabled ? 'Coming soon' : ''}
                     >
                       {p}
                     </button>

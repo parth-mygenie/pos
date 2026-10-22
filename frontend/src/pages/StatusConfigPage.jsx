@@ -4,7 +4,7 @@ import { ArrowLeft, Check, RotateCcw, Save, Eye, EyeOff } from "lucide-react";
 import Sidebar from "../components/layout/Sidebar";
 import { COLORS } from "../constants";
 import { useToast } from "../hooks/use-toast";
-import { useStations, useMenu, useRestaurant } from "../contexts";
+import { useStations, useMenu, useRestaurant, useNotifications } from "../contexts";
 import { fetchStationData } from "../api/services/stationService";
 // CR-008 #4 Phase A / Bucket D1 (May-2026): browser-local "Stay on Order
 // Entry After Collect Bill" preference. UI lives in the UI Elements section
@@ -65,10 +65,10 @@ const QSR_MODE_KEY = 'mygenie_qsr_mode_enabled';
 const QSR_MODE_FACTORY = false;
 const QSR_DISCOUNT_KEY = 'mygenie_qsr_discount_enabled';
 const QSR_DISCOUNT_FACTORY = false;
-
-// PROD-BUG-001 (2026-05-20): Auto Settle toggle.
-const AUTO_SETTLE_KEY = 'mygenie_auto_settle_enabled';
-const AUTO_SETTLE_FACTORY = false;
+// BUG-273: AUTO_SETTLE_KEY + AUTO_SETTLE_FACTORY + autoSettleEnabled state + localStorage read/write + toggle UI removed
+// CR-430: Served Items Auto-expand toggle
+const SERVED_AUTO_EXPAND_KEY = 'mygenie_served_auto_expand';
+const SERVED_AUTO_EXPAND_FACTORY = true; // default ON
 
 // Default column layout configs
 const DEFAULT_LAYOUT_TABLE = { dineIn: 2, takeAway: 2, delivery: 2, room: 2 };
@@ -128,7 +128,10 @@ const DEFAULT_ENABLED = ["pending", "preparing", "ready", "served"];  // Status 
 const StatusConfigPage = () => {
   const navigate = useNavigate();
   const { toast } = useToast();
-  const [isSidebarExpanded, setIsSidebarExpanded] = useState(false);
+  // BUG-361: persist sidebar state across reloads
+  const [isSidebarExpanded, setIsSidebarExpanded] = useState(
+    () => localStorage.getItem('mygenie_sidebar_expanded') === 'true'
+  );
   const [isSilentMode, setIsSilentMode] = useState(false);
   
   // Get available stations from context (loaded from products)
@@ -144,6 +147,7 @@ const StatusConfigPage = () => {
 
   // CR-024 Bug B: Get API features to filter channels
   const { features } = useRestaurant();
+  const { notificationsEnabled, setNotificationsEnabled } = useNotifications(); // CR-440
 
   // CR-024: Only show channels that the API says are enabled
   const availableChannels = ALL_CHANNELS.filter(ch => {
@@ -195,11 +199,9 @@ const StatusConfigPage = () => {
   const [qsrModeEnabled, setQsrModeEnabled] = useState(QSR_MODE_FACTORY);
   const [qsrDiscountEnabled, setQsrDiscountEnabled] = useState(QSR_DISCOUNT_FACTORY);
 
-  // PROD-BUG-001 (2026-05-20): Auto Settle toggle state.
-  const [autoSettleEnabled, setAutoSettleEnabled] = useState(AUTO_SETTLE_FACTORY);
-
   // CR-010: Weight Entry Prompt toggle state.
   const [weightPromptEnabled, setWeightPromptEnabled] = useState(true);
+  const [servedAutoExpand, setServedAutoExpand] = useState(SERVED_AUTO_EXPAND_FACTORY); // CR-430
 
   // CR-051: Customer field mandatoriness override states
   const [walkinNameReq, setWalkinNameReq] = useState(false);
@@ -209,7 +211,8 @@ const StatusConfigPage = () => {
   const [takeawayPhoneReq, setTakeawayPhoneReq] = useState(false);
   // CR-051 amendment: TakeAway Name toggle (default ON — mandatory)
   const [takeawayNameReq, setTakeawayNameReq] = useState(true);
-
+  // CR-350: Room check-in ID upload mandatory toggle
+  const [roomIdUploadReq, setRoomIdUploadReq] = useState(false);
   // Load from localStorage on mount
   useEffect(() => {
     // Load status config
@@ -332,20 +335,20 @@ const StatusConfigPage = () => {
       console.error('Failed to read QSR mode flags:', e);
     }
 
-    // PROD-BUG-001 (2026-05-20): hydrate Auto Settle toggle
-    try {
-      const storedAutoSettle = localStorage.getItem(AUTO_SETTLE_KEY);
-      if (storedAutoSettle === 'true') setAutoSettleEnabled(true);
-    } catch (e) {
-      console.error('Failed to read Auto Settle flag:', e);
-    }
-
     // CR-010: hydrate Weight Entry Prompt toggle
     try {
       const storedWeight = localStorage.getItem('mygenie_weight_prompt_enabled');
       setWeightPromptEnabled(storedWeight !== 'false'); // default ON
     } catch (e) {
       console.error('Failed to read Weight Prompt flag:', e);
+    }
+
+    // CR-430: hydrate Served Items Auto-expand preference
+    try {
+      const storedServed = localStorage.getItem(SERVED_AUTO_EXPAND_KEY);
+      setServedAutoExpand(storedServed !== 'false'); // default ON
+    } catch (e) {
+      console.error('Failed to read served auto-expand flag:', e);
     }
 
     // CR-051: hydrate customer field mandatoriness overrides
@@ -357,6 +360,8 @@ const StatusConfigPage = () => {
       setTakeawayPhoneReq(localStorage.getItem('mygenie_takeaway_phone_required') === 'true');
       // CR-051 amendment: TakeAway Name — default ON if key absent
       setTakeawayNameReq(localStorage.getItem('mygenie_takeaway_name_required') !== 'false');
+      // CR-350: hydrate room ID upload requirement
+      setRoomIdUploadReq(localStorage.getItem('mygenie_room_id_upload_required') === 'true');
     } catch (e) {
       console.error('Failed to read customer field requirements:', e);
     }
@@ -415,8 +420,6 @@ const StatusConfigPage = () => {
     // BUG-099: reset QSR toggles
     setQsrModeEnabled(QSR_MODE_FACTORY);
     setQsrDiscountEnabled(QSR_DISCOUNT_FACTORY);
-    // PROD-BUG-001: reset Auto Settle
-    setAutoSettleEnabled(AUTO_SETTLE_FACTORY);
     // CR-051: reset customer field requirements
     setWalkinNameReq(false);
     setWalkinPhoneReq(false);
@@ -425,6 +428,9 @@ const StatusConfigPage = () => {
     setTakeawayPhoneReq(false);
     // CR-051 amendment: TakeAway Name resets to ON (mandatory)
     setTakeawayNameReq(true);
+    // CR-350: reset room ID upload (default: not required)
+    setRoomIdUploadReq(false);
+    setServedAutoExpand(SERVED_AUTO_EXPAND_FACTORY); // CR-430
     setHasChanges(true);
   };
 
@@ -546,10 +552,9 @@ const StatusConfigPage = () => {
     // BUG-099: persist QSR toggles
     localStorage.setItem(QSR_MODE_KEY, qsrModeEnabled ? 'true' : 'false');
     localStorage.setItem(QSR_DISCOUNT_KEY, qsrDiscountEnabled ? 'true' : 'false');
-    // PROD-BUG-001: persist Auto Settle toggle
-    localStorage.setItem(AUTO_SETTLE_KEY, autoSettleEnabled ? 'true' : 'false');
     // CR-010: persist Weight Entry Prompt toggle
     localStorage.setItem('mygenie_weight_prompt_enabled', weightPromptEnabled ? 'true' : 'false');
+    localStorage.setItem(SERVED_AUTO_EXPAND_KEY, servedAutoExpand ? 'true' : 'false'); // CR-430
 
     // CR-051: persist customer field mandatoriness overrides
     localStorage.setItem('mygenie_walkin_name_required', walkinNameReq ? 'true' : 'false');
@@ -559,6 +564,8 @@ const StatusConfigPage = () => {
     localStorage.setItem('mygenie_takeaway_phone_required', takeawayPhoneReq ? 'true' : 'false');
     // CR-051 amendment: persist TakeAway Name toggle
     localStorage.setItem('mygenie_takeaway_name_required', takeawayNameReq ? 'true' : 'false');
+    // CR-350: persist room ID upload requirement
+    localStorage.setItem('mygenie_room_id_upload_required', roomIdUploadReq ? 'true' : 'false');
 
     // STATION_VIEW_SYNC (Apr-2026): localStorage write alone leaves StationContext
     // stale until a full reload, so the dashboard's StationPanel renders nothing
@@ -610,7 +617,7 @@ const StatusConfigPage = () => {
       {/* Sidebar */}
       <Sidebar
         isExpanded={isSidebarExpanded}
-        setIsExpanded={setIsSidebarExpanded}
+        setIsExpanded={(v) => { setIsSidebarExpanded(v); localStorage.setItem('mygenie_sidebar_expanded', String(v)); }}
         isSilentMode={isSilentMode}
         setIsSilentMode={setIsSilentMode}
       />
@@ -956,50 +963,6 @@ const StatusConfigPage = () => {
               </div>
               )}
 
-              {/* PROD-BUG-001 (2026-05-20): Auto Settle toggle */}
-              <div
-                className="rounded-lg p-4 border-2 flex items-start justify-between gap-4 mt-3"
-                style={{
-                  backgroundColor: autoSettleEnabled ? `${COLORS.primaryGreen}05` : COLORS.lightBg,
-                  borderColor: autoSettleEnabled ? COLORS.primaryGreen : COLORS.borderGray,
-                }}
-              >
-                <div className="flex-1">
-                  <div className="flex items-center gap-2 mb-1">
-                    <span className="font-medium" style={{ color: COLORS.darkText }}>
-                      Auto Settle
-                    </span>
-                    <span
-                      className="text-xs px-2 py-0.5 rounded-full"
-                      style={{
-                        backgroundColor: autoSettleEnabled ? COLORS.primaryGreen : COLORS.grayText,
-                        color: '#fff',
-                      }}
-                    >
-                      {autoSettleEnabled ? 'ON' : 'OFF'}
-                    </span>
-                  </div>
-                  <p className="text-xs leading-relaxed" style={{ color: COLORS.grayText }}>
-                    When ON, prepaid orders that are already paid are automatically settled
-                    when they reach the served/delivered stage. Cashier does not need to click
-                    Settle. PayLater orders are excluded (require explicit settlement).
-                  </p>
-                </div>
-                <button
-                  data-testid="auto-settle-toggle"
-                  onClick={() => { setAutoSettleEnabled(v => !v); setHasChanges(true); }}
-                  className="relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full transition-colors focus:outline-none"
-                  style={{ backgroundColor: autoSettleEnabled ? COLORS.primaryGreen : COLORS.borderGray }}
-                  role="switch"
-                  aria-checked={autoSettleEnabled}
-                >
-                  <span
-                    className="inline-block h-5 w-5 transform rounded-full bg-white shadow transition-transform"
-                    style={{ transform: autoSettleEnabled ? 'translateX(22px)' : 'translateX(2px)', marginTop: '2px' }}
-                  />
-                </button>
-              </div>
-
               {/* CR-010: Weight Entry Prompt toggle */}
               <div
                 className="rounded-lg p-4 border-2 flex items-start justify-between gap-4 mt-3"
@@ -1043,6 +1006,86 @@ const StatusConfigPage = () => {
                   />
                 </button>
               </div>
+            </div>
+
+            {/* CR-430: Served Items Auto-expand toggle */}
+            <div
+              className="rounded-lg p-4 border-2 flex items-start justify-between gap-4 mt-3"
+              style={{
+                backgroundColor: servedAutoExpand ? `${COLORS.primaryGreen}05` : COLORS.lightBg,
+                borderColor: servedAutoExpand ? COLORS.primaryGreen : COLORS.borderGray,
+              }}
+            >
+              <div className="flex-1">
+                <div className="flex items-center gap-2 mb-1">
+                  <span className="font-medium" style={{ color: COLORS.darkText }}>
+                    Auto-expand Served Items
+                  </span>
+                  <span
+                    className="text-xs px-2 py-0.5 rounded-full"
+                    style={{ backgroundColor: servedAutoExpand ? COLORS.primaryGreen : COLORS.borderGray, color: '#fff' }}
+                  >
+                    {servedAutoExpand ? 'ON' : 'OFF'}
+                  </span>
+                </div>
+                <p className="text-xs leading-relaxed" style={{ color: COLORS.grayText }}>
+                  When ON, served items automatically expand on an order card once all items are served.
+                  Turn OFF to keep served items collapsed by default. Per-device setting.
+                </p>
+              </div>
+              <button
+                data-testid="served-auto-expand-toggle"
+                onClick={() => { setServedAutoExpand(v => !v); setHasChanges(true); }}
+                className="relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full transition-colors focus:outline-none"
+                style={{ backgroundColor: servedAutoExpand ? COLORS.primaryGreen : COLORS.borderGray }}
+                role="switch"
+                aria-checked={servedAutoExpand}
+              >
+                <span
+                  className="inline-block h-5 w-5 transform rounded-full bg-white shadow transition-transform"
+                  style={{ transform: servedAutoExpand ? 'translateX(22px)' : 'translateX(2px)', marginTop: '2px' }}
+                />
+              </button>
+            </div>
+
+            {/* CR-440: Order Notification Banners toggle — immediate effect, no Save Config needed */}
+            <div
+              className="rounded-lg p-4 border-2 flex items-start justify-between gap-4 mt-3"
+              style={{
+                backgroundColor: notificationsEnabled ? `${COLORS.primaryGreen}05` : COLORS.lightBg,
+                borderColor: notificationsEnabled ? COLORS.primaryGreen : COLORS.borderGray,
+              }}
+            >
+              <div className="flex-1">
+                <div className="flex items-center gap-2 mb-1">
+                  <span className="font-medium" style={{ color: COLORS.darkText }}>
+                    Order Notification Banners
+                  </span>
+                  <span
+                    className="text-xs px-2 py-0.5 rounded-full"
+                    style={{ backgroundColor: notificationsEnabled ? COLORS.primaryGreen : COLORS.borderGray, color: '#fff' }}
+                  >
+                    {notificationsEnabled ? 'ON' : 'OFF'}
+                  </span>
+                </div>
+                <p className="text-xs leading-relaxed" style={{ color: COLORS.grayText }}>
+                  When ON, incoming order notifications show as coloured banners at the top of the screen.
+                  Turn OFF to suppress banners on this device. Sound is controlled separately by the Ringer toggle. Per-device setting.
+                </p>
+              </div>
+              <button
+                data-testid="notification-banner-toggle"
+                onClick={() => setNotificationsEnabled(v => !v)}
+                className="relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full transition-colors focus:outline-none"
+                style={{ backgroundColor: notificationsEnabled ? COLORS.primaryGreen : COLORS.borderGray }}
+                role="switch"
+                aria-checked={notificationsEnabled}
+              >
+                <span
+                  className="inline-block h-5 w-5 transform rounded-full bg-white shadow transition-transform"
+                  style={{ transform: notificationsEnabled ? 'translateX(22px)' : 'translateX(2px)', marginTop: '2px' }}
+                />
+              </button>
             </div>
 
             {/* ============== CR-051: CUSTOMER FIELD REQUIREMENTS ============== */}
@@ -1107,6 +1150,31 @@ const StatusConfigPage = () => {
                     </button>
                   </div>
                 </div>
+              </div>
+            </div>
+
+            {/* ============== CR-350: ROOM CHECK-IN REQUIREMENTS ============== */}
+            <div className="mt-6 pt-4" style={{ borderTop: `1px solid ${COLORS.borderGray}` }}>
+              <h3 className="text-sm font-semibold mb-3" style={{ color: COLORS.darkText }}>
+                Room Check-In Requirements
+              </h3>
+              <p className="text-xs mb-3" style={{ color: COLORS.grayText }}>
+                Control which documents are mandatory at room check-in. Per-device settings.
+              </p>
+              <div className="flex items-center justify-between rounded-lg px-3 py-2 border"
+                style={{ borderColor: roomIdUploadReq ? COLORS.primaryGreen : COLORS.borderGray, backgroundColor: roomIdUploadReq ? `${COLORS.primaryGreen}05` : '#fff' }}>
+                <span className="text-sm" style={{ color: COLORS.darkText }}>ID Document mandatory</span>
+                <button
+                  data-testid="room-id-upload-req-toggle"
+                  onClick={() => { setRoomIdUploadReq(v => !v); setHasChanges(true); }}
+                  className="relative inline-flex h-5 w-9 flex-shrink-0 cursor-pointer rounded-full transition-colors"
+                  style={{ backgroundColor: roomIdUploadReq ? COLORS.primaryGreen : COLORS.borderGray }}
+                  role="switch"
+                  aria-checked={roomIdUploadReq}
+                >
+                  <span className="inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform"
+                    style={{ transform: roomIdUploadReq ? 'translateX(17px)' : 'translateX(2px)', marginTop: '2px' }} />
+                </button>
               </div>
             </div>
 

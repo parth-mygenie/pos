@@ -1,12 +1,16 @@
 import { createContext, useContext, useState, useCallback, useMemo } from 'react';
+import { useAuth } from './AuthContext'; // BUG-598
+import { ACTIVE_MENU_TYPE_DEFAULT } from '../utils/activeMenuPrefs'; // BUG-463: only default needed
 
 // Create Menu Context
 const MenuContext = createContext(null);
 
 // Menu Provider Component
 export const MenuProvider = ({ children }) => {
+  const { assignFoodMenu } = useAuth(); // BUG-598
   const [categories, setCategoriesData] = useState([]);
   const [products, setProductsData] = useState([]);
+  const [popularProducts, setPopularProductsData] = useState([]); // BUG-340
   const [isLoaded, setIsLoaded] = useState(false);
 
   // Set categories (called from LoadingPage)
@@ -18,6 +22,11 @@ export const MenuProvider = ({ children }) => {
   const setProducts = useCallback((data) => {
     setProductsData(data || []);
     setIsLoaded(true);
+  }, []);
+
+  // BUG-340: Set popular products (called from LoadingPage boot, gated by showPopularCategory)
+  const setPopularProducts = useCallback((data) => {
+    setPopularProductsData(data || []);
   }, []);
 
   // BUG-116 (2026-06-08): Delta update from socket `food_update_${rid}`.
@@ -45,6 +54,7 @@ export const MenuProvider = ({ children }) => {
   const clearMenu = useCallback(() => {
     setCategoriesData([]);
     setProductsData([]);
+    setPopularProductsData([]); // BUG-340
     setIsLoaded(false);
   }, []);
 
@@ -88,16 +98,45 @@ export const MenuProvider = ({ children }) => {
     return products.filter((p) => p.isActive && !p.isOutOfStock);
   }, [products]);
 
+  // BUG-598: activeMenuType from employee's assign_food_menu (login response).
+  // If assigned → use it. If not assigned or missing → default to 'Normal'.
+  // Replaces BUG-463's "derive from first product" which broke on mixed-menu responses.
+  const activeMenuType = assignFoodMenu || ACTIVE_MENU_TYPE_DEFAULT;
+
+  // Products filtered to the active menu type — kept as safety net (effectively a no-op
+  // since backend pre-filtered all products to the employee's assigned menu).
+  const activeMenuProducts = useMemo(
+    () => products.filter(p => p.foodFor === activeMenuType),
+    [products, activeMenuType]
+  );
+
+  // CR-376: Distinct non-Aggregator menu types that have ≥1 active, non-disabled item.
+  // BUG-463: StatusConfigPage Active Menu picker removed — availableMenuTypes still used
+  // by OrderEntry for the empty-state guard (availableMenuTypes.length > 1).
+  const availableMenuTypes = useMemo(
+    () => [...new Set(
+      products
+        .filter(p => p.isActive && !p.isDisabled && p.foodFor !== 'Aggregator')
+        .map(p => p.foodFor)
+    )].sort((a, b) => a === 'Normal' ? -1 : b === 'Normal' ? 1 : a.localeCompare(b)),
+    [products]
+  );
+
   // Context value
   const value = useMemo(() => ({
     // State
     categories,
     products,
+    popularProducts, // BUG-340
     isLoaded,
+    activeMenuProducts, // CR-376
+    availableMenuTypes, // CR-376
+    activeMenuType,     // CR-376
     
     // Actions
     setCategories,
     setProducts,
+    setPopularProducts, // BUG-340
     addOrUpdateProduct,
     removeProduct,
     clearMenu,
@@ -112,9 +151,14 @@ export const MenuProvider = ({ children }) => {
   }), [
     categories,
     products,
+    popularProducts, // BUG-340
     isLoaded,
+    activeMenuProducts, // CR-376
+    availableMenuTypes, // CR-376
+    activeMenuType,     // CR-376
     setCategories,
     setProducts,
+    setPopularProducts, // BUG-340
     addOrUpdateProduct,
     removeProduct,
     clearMenu,

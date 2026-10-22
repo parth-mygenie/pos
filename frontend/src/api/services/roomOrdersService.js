@@ -39,7 +39,8 @@ const parseRoomInfo = (roomInfo, userName) => {
     advancePayment: parseFloat(roomInfo.advance_payment) || 0,
     balancePayment: parseFloat(roomInfo.balance_payment) || 0,
     receiveBalance: parseFloat(roomInfo.receive_balance) || 0,
-    discountAmount: parseFloat(roomInfo.discount_amount) || 0,
+    // BUG-487: backend ships room_discount_amount (not discount_amount).
+    discountAmount: parseFloat(roomInfo.room_discount_amount) || 0,
     roomNo:         roomInfo.room_no || null,
     checkInDate:    roomInfo.checkin_date || null,
     checkOutDate:   roomInfo.checkout_date || null,

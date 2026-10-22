@@ -102,7 +102,10 @@ const FoodCourtMockup = () => {
   const { restaurant } = useRestaurant();
   const schedules = useMemo(() => restaurant?.schedules || [], [restaurant?.schedules]);
   const downloadRef = useRef(null);
-  const [isSidebarExpanded, setIsSidebarExpanded] = useState(false);
+  // BUG-361: persist sidebar state across reloads
+  const [isSidebarExpanded, setIsSidebarExpanded] = useState(
+    () => localStorage.getItem('mygenie_sidebar_expanded') === 'true'
+  );
   const [isSilentMode, setIsSilentMode] = useState(false);
 
   // Date range
@@ -193,10 +196,10 @@ const FoodCourtMockup = () => {
       stations.forEach((s) => { stationVals[s] = { itemTotal: 0, discount: 0, subTotal: 0, tax: 0, total: 0 }; });
 
       // Step 1: Compute per-station item totals + tax
-      const orderItemTotal = (o.items || []).reduce((s, it) => s + (it.price || 0), 0);
+      const orderItemTotal = (o.items || []).reduce((s, it) => s + (it.price || 0) + (it.addonTotal || 0) + (it.variationTotal || 0), 0); // BUG-296-R2
       (o.items || []).forEach((it) => {
         const st = it.station && stationList.includes(it.station) ? it.station : 'UNASSIGNED';
-        stationVals[st].itemTotal += it.price || 0;
+        stationVals[st].itemTotal += (it.price || 0) + (it.addonTotal || 0) + (it.variationTotal || 0); // BUG-296-R2: OD-1
         if (it.foodStatus !== 3) {
           stationVals[st].tax += (it.gstAmount || 0) + (it.vatAmount || 0);
         }
@@ -212,7 +215,7 @@ const FoodCourtMockup = () => {
       });
 
       // Expected totals (from item-level sums, same formulas — so drift = 0 by construction)
-      const allItemsPrice = (o.items || []).reduce((s, it) => s + (it.price || 0), 0);
+      const allItemsPrice = (o.items || []).reduce((s, it) => s + (it.price || 0) + (it.addonTotal || 0) + (it.variationTotal || 0), 0); // BUG-296-R2: OD-1
       const allItemsTax = (o.items || []).reduce((s, it) => it.foodStatus !== 3 ? s + (it.gstAmount || 0) + (it.vatAmount || 0) : s, 0);
       const expectedDiscount = orderDiscount;
       const expectedSubTotal = Math.round((allItemsPrice - expectedDiscount) * 100) / 100;
@@ -467,7 +470,7 @@ const FoodCourtMockup = () => {
   return (
     <div className="flex h-screen bg-white" data-testid="food-court-page">
       <Sidebar
-        isExpanded={isSidebarExpanded} setIsExpanded={setIsSidebarExpanded}
+        isExpanded={isSidebarExpanded} setIsExpanded={(v) => { setIsSidebarExpanded(v); localStorage.setItem('mygenie_sidebar_expanded', String(v)); }}
         isSilentMode={isSilentMode} setIsSilentMode={setIsSilentMode}
         onOpenSettings={() => {}} onOpenMenu={() => {}} onOpenCredit={() => {}}
         onRefresh={() => {}} isRefreshing={false} isOrderEntryOpen={false}
@@ -476,7 +479,7 @@ const FoodCourtMockup = () => {
       <div className="flex-1 flex overflow-hidden">
         <main className="flex-1 flex flex-col overflow-hidden bg-zinc-50">
           {/* ── Header (S7 pattern) ──────────────────────────────── */}
-          <header className="flex items-center justify-between px-8 py-5 bg-white border-b border-zinc-200 shrink-0" data-testid="food-court-header">
+          <header className="flex items-center justify-between px-8 py-5 bg-white border-b border-zinc-200 shrink-0 flex-wrap gap-y-3" data-testid="food-court-header"> {/* BUG-555 */}
             <div className="flex items-center gap-4">
               <button className="p-2 hover:bg-zinc-100 rounded-lg transition-colors" data-testid="food-court-back-btn" onClick={() => navigate('/reports-module/dashboard')}>
                 <ArrowLeft className="w-5 h-5 text-zinc-600" />
@@ -486,7 +489,7 @@ const FoodCourtMockup = () => {
               </h1>
             </div>
 
-            <div className="flex items-center gap-3">
+            <div className="flex items-center gap-3 flex-wrap">
               {/* Station dropdown */}
               <div className="flex items-center gap-2 px-3 py-2 border border-zinc-200 bg-white rounded-lg" data-testid="food-court-station-filter">
                 <Store className="w-4 h-4 text-zinc-500" />

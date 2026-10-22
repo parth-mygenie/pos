@@ -321,7 +321,10 @@ const RoomOrdersReportPage = () => {
   );
   const { getTableById } = useTables();
 
-  const [isSidebarExpanded, setIsSidebarExpanded] = useState(false);
+  // BUG-361: persist sidebar state across reloads
+  const [isSidebarExpanded, setIsSidebarExpanded] = useState(
+    () => localStorage.getItem('mygenie_sidebar_expanded') === 'true'
+  );
   const [isSilentMode, setIsSilentMode] = useState(false);
 
   // Today auto-selected (matches Audit Report convention).
@@ -594,7 +597,7 @@ const RoomOrdersReportPage = () => {
     >
       <Sidebar
         isExpanded={isSidebarExpanded}
-        setIsExpanded={setIsSidebarExpanded}
+        setIsExpanded={(v) => { setIsSidebarExpanded(v); localStorage.setItem('mygenie_sidebar_expanded', String(v)); }}
         isSilentMode={isSilentMode}
         setIsSilentMode={setIsSilentMode}
         onOpenSettings={() => {}}

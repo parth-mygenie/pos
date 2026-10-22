@@ -1,13 +1,15 @@
 import { useState } from "react";
 import { DragDropContext, Droppable, Draggable } from "@hello-pangea/dnd";
-import { GripVertical, Search, Plus, Pencil, Trash2 } from "lucide-react";
+import { GripVertical, Search, Plus, Pencil, Trash2, Printer } from "lucide-react";
 import { COLORS } from "../../../constants";
 import { useToast } from "../../../hooks/use-toast";
 import * as menuService from "../../../api/services/menuManagementService";
 import { toAPI } from "../../../api/transforms/menuManagementTransform";
+import { useRestaurant } from "../../../contexts"; // BUG-297: for printer name display
 
 const CategoryList = ({ categories: propCategories, stations, selectedCategoryId, onSelectCategory, onRefresh }) => {
   const { toast } = useToast();
+  const { printerAgents } = useRestaurant(); // BUG-297: to show printer name for selected station
   const [search, setSearch] = useState("");
   const [localCategories, setLocalCategories] = useState(null);
   const [addingCategory, setAddingCategory] = useState(false);
@@ -22,6 +24,15 @@ const CategoryList = ({ categories: propCategories, stations, selectedCategoryId
   const totalItems = cats.reduce((sum, c) => sum + (c.itemCount || 0), 0);
 
   const stationOptions = stations?.length > 0 ? stations : [{ id: 0, name: 'KDS' }];
+
+  // BUG-297: look up printer name from printerAgents for the currently selected station
+  const getPrinterLabel = (stationName) => {
+    if (!Array.isArray(printerAgents) || !stationName) return null;
+    const agent = printerAgents.find(
+      a => (a.station || '').toUpperCase() === stationName.toUpperCase()
+    );
+    return agent?.printer_type || agent?.printer_name || null;
+  };
 
   const handleDragEnd = async (result) => {
     if (!result.destination) return;
@@ -44,7 +55,7 @@ const CategoryList = ({ categories: propCategories, stations, selectedCategoryId
     if (!formName.trim()) return;
     setSaving(true);
     try {
-      await menuService.addCategory({ name: formName.trim(), stationName: formStation, catOrder: cats.length });
+      await menuService.addCategory({ name: formName.trim(), stationName: formStation, printerId: stationOptions.find(s => s.name === formStation)?.printerId || '', catOrder: cats.length }); // BUG-297
       toast({ title: "Saved", description: `Category "${formName}" added.` });
       setAddingCategory(false);
       setFormName("");
@@ -62,6 +73,7 @@ const CategoryList = ({ categories: propCategories, stations, selectedCategoryId
     setEditingId(cat.categoryId);
     setFormName(cat.categoryName);
     setFormStation(cat.stationName || "KDS");
+    // BUG-297: printerId is derived from station at save time — no extra state needed
   };
 
   const handleSaveEdit = async () => {
@@ -69,7 +81,7 @@ const CategoryList = ({ categories: propCategories, stations, selectedCategoryId
     setSaving(true);
     try {
       const cat = cats.find((c) => c.categoryId === editingId);
-      await menuService.editCategory(editingId, { name: formName.trim(), stationName: formStation, catOrder: cat?.catOrder || 0 });
+      await menuService.editCategory(editingId, { name: formName.trim(), stationName: formStation, printerId: stationOptions.find(s => s.name === formStation)?.printerId || '', catOrder: cat?.catOrder || 0 }); // BUG-297
       toast({ title: "Saved", description: "Category updated." });
       setEditingId(null);
       setFormName("");
@@ -158,6 +170,18 @@ const CategoryList = ({ categories: propCategories, stations, selectedCategoryId
                           <option key={s.id || s.name} value={s.name}>{s.name}</option>
                         ))}
                       </select>
+                      {/* BUG-297: show mapped printer name */}
+                      {getPrinterLabel(formStation) ? (
+                        <div className="flex items-center gap-1.5 px-2 py-1 mb-1 rounded text-xs" style={{ backgroundColor: 'rgba(46,125,50,0.08)', color: COLORS.primaryGreen }}>
+                          <Printer className="w-3 h-3 flex-shrink-0" />
+                          <span className="font-medium truncate">{getPrinterLabel(formStation)}</span>
+                        </div>
+                      ) : (
+                        <div className="flex items-center gap-1.5 px-2 py-1 mb-1 rounded text-xs" style={{ backgroundColor: '#FEF9C3', color: '#92400E' }}>
+                          <Printer className="w-3 h-3 flex-shrink-0" />
+                          <span>No printer mapped to {formStation}</span>
+                        </div>
+                      )}
                       <div className="flex gap-1 justify-end">
                         <button onClick={() => setEditingId(null)} className="px-2 py-0.5 text-xs rounded border" style={{ borderColor: COLORS.borderGray }}>Cancel</button>
                         <button onClick={handleSaveEdit} disabled={saving} className="px-2 py-0.5 text-xs rounded text-white" style={{ backgroundColor: COLORS.primaryGreen }}>
@@ -241,7 +265,7 @@ const CategoryList = ({ categories: propCategories, stations, selectedCategoryId
           <select
             value={formStation}
             onChange={(e) => setFormStation(e.target.value)}
-            className="w-full px-2 py-1.5 text-xs rounded border outline-none bg-white mb-2"
+            className="w-full px-2 py-1.5 text-xs rounded border outline-none bg-white mb-1"
             style={{ borderColor: COLORS.borderGray }}
             data-testid="new-category-station"
           >
@@ -249,6 +273,18 @@ const CategoryList = ({ categories: propCategories, stations, selectedCategoryId
               <option key={s.id || s.name} value={s.name}>{s.name}</option>
             ))}
           </select>
+          {/* BUG-297: show mapped printer name */}
+          {getPrinterLabel(formStation) ? (
+            <div className="flex items-center gap-1.5 px-2 py-1.5 mb-2 rounded-lg text-xs" style={{ backgroundColor: 'rgba(46,125,50,0.08)', color: COLORS.primaryGreen }}>
+              <Printer className="w-3 h-3 flex-shrink-0" />
+              <span className="font-medium truncate">{getPrinterLabel(formStation)}</span>
+            </div>
+          ) : (
+            <div className="flex items-center gap-1.5 px-2 py-1.5 mb-2 rounded-lg text-xs" style={{ backgroundColor: '#FEF9C3', color: '#92400E' }}>
+              <Printer className="w-3 h-3 flex-shrink-0" />
+              <span>No printer mapped to {formStation}</span>
+            </div>
+          )}
           <div className="flex gap-1 justify-end">
             <button onClick={() => { setAddingCategory(false); setFormName(""); }} className="px-3 py-1 text-xs rounded border" style={{ borderColor: COLORS.borderGray }}>Cancel</button>
             <button onClick={handleAdd} disabled={saving} className="px-3 py-1 text-xs rounded text-white" style={{ backgroundColor: COLORS.primaryGreen }}>

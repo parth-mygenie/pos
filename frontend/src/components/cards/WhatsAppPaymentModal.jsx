@@ -68,7 +68,9 @@ const WhatsAppPaymentModal = ({ isOpen, onClose, order, restaurantName }) => {
   };
 
   return (
-    <div className="fixed inset-0 z-[100] flex items-center justify-center" data-testid="whatsapp-payment-modal">
+    // BUG-335: stopPropagation prevents clicks inside modal from bubbling to OrderCard
+    // (OrderCard root has onClick={onEdit} which navigates — must not fire from modal)
+    <div className="fixed inset-0 z-[100] flex items-center justify-center" data-testid="whatsapp-payment-modal" onClick={(e) => e.stopPropagation()}>
       {/* Backdrop */}
       <div className="absolute inset-0 bg-black/40" onClick={onClose} />
 

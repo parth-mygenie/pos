@@ -390,7 +390,9 @@ const RoomRowCard = ({
     );
     const rent             = parseFloat(ri.roomPrice)      || 0;
     const advance          = parseFloat(ri.advancePayment) || 0;
-    const balance          = parseFloat(ri.balancePayment) || 0;
+    const balance          = parseFloat(ri.balancePayment) || 0;  // keep for roomService formula
+    // BUG-360: live display balance — reflects mid-stay payments
+    const displayBalance   = parseFloat(ri.roomPaymentSummary?.remainingRoomBalance ?? ri.balancePayment) || 0;
     const receiveBalance   = parseFloat(ri.receiveBalance) || 0;
     const isFullySettled   = detail.fOrderStatus === 6;
     const explicitDiscount = parseFloat(ri.discountAmount) || 0;
@@ -419,7 +421,8 @@ const RoomRowCard = ({
       discount,
       rent,
       advance,
-      balance,
+      balance,          // kept for internal arithmetic (roomService formula)
+      displayBalance,   // BUG-360: live balance for display
       roomOrderAmount,
       associatedOrders,
     };
@@ -591,7 +594,7 @@ const RoomRowCard = ({
             <RoomBillingCard
               rent={numbers.rent}
               advance={numbers.advance}
-              balance={numbers.balance}
+              balance={numbers.displayBalance}
             />
             <TransferredOrdersTable
               associatedOrders={numbers.associatedOrders}

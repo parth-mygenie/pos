@@ -93,6 +93,7 @@ export const fromAPI = {
    * CR-059 BUG-FIX: API returns non-standard keys with spaces/uppercase:
    *   'Date & Time', 'EXPENSE', 'Amount', 'Payment Method', 'Category'
    */
+  // CR-061 V3: Updated to extract G4 employee_name, G5 notes, G6 pagination metadata
   expenseReport: (res) => {
     const data = res?.data ?? {};
     const transactions = Array.isArray(
@@ -101,23 +102,29 @@ export const fromAPI = {
       ? (data.report ?? data.expenses ?? data.transactions ?? data)
       : [];
     return {
-      totalAmount: parseFloat(data.total_amount ?? data.totalAmount ?? 0),
+      // CR-061: Pagination metadata (G6 — absent in older API, defaults to null)
+      totalAmount:  parseFloat(data.total_amount ?? data.totalAmount ?? 0),
+      totalCount:   data.total_count   ?? null,
+      totalPages:   data.total_pages   ?? null,
+      perPage:      data.per_page      ?? null,
+      currentPage:  data.page          ?? 1,
       transactions: transactions.map((t) => ({
-        id: t.id,
-        // API returns 'Date & Time' (date-only string e.g. "01/06/2026")
-        date: t['Date & Time'] ?? t.e_date ?? t.date ?? '',
-        time: t['Date & Time'] ?? t.created_at ?? t.time ?? '',
-        // API returns 'EXPENSE' for item name
-        expense: t['EXPENSE'] ?? t.exp_name ?? t.expense ?? t.title ?? '',
-        // API returns 'Category' for category name
-        category: t['Category'] ?? t.category_name ?? t.category ?? '',
-        categoryId: t.category_id ?? null,
-        // API returns 'Amount' (string) for the expense amount
-        amount: parseFloat(t['Amount'] ?? t.d_amount ?? t.amount ?? 0),
-        // API returns 'Payment Method' with a space
+        id:            t.id,
+        date:          t['Date & Time']   ?? t.e_date          ?? t.date ?? '',
+        time:          t['Date & Time']   ?? t.created_at      ?? t.time ?? '',
+        expense:       t['EXPENSE']       ?? t.exp_name        ?? t.expense ?? t.title ?? '',
+        category:      t['Category']      ?? t.category_name   ?? t.category ?? '',
+        categoryId:    t.category_id      ?? null,
+        amount:        parseFloat(t['Amount'] ?? t.d_amount   ?? t.amount ?? 0),
         paymentMethod: t['Payment Method'] ?? t.payment_method ?? '',
-        quantity: parseFloat(t.quantity ?? 0),
-        unit: t.unit ?? '',
+        quantity:      parseFloat(t.quantity ?? 0),
+        unit:          t.unit             ?? '',
+        // CR-061 V3 — G4 + G5 fields (safe fallback if absent)
+        employeeName:   t.employee_name    ?? '',
+        notes:          t.notes            ?? '',
+        // CR-087: payment context fields (safe fallback — backend delivers both as "" when absent)
+        paymentMadeTo:  t.payment_made_to  ?? '',
+        paymentRefId:   t.payment_ref_id   ?? '',
       })),
     };
   },
@@ -169,20 +176,44 @@ export const fromAPI = {
       ? data.map((p) => ({
           id: p.id,
           stockId: p.stock_id ?? p.stockId,
-          stockTitle: p.stock_title ?? p.stockTitle ?? '',
+          stockTitle: p.stock_title ?? p.expense_name ?? p.stockTitle ?? '', // CR-066: API returns expense_name on GET /stock-unit-prices
           quantity: parseFloat(p.quantity ?? 1),
           price: parseFloat(p.price ?? 0),
         }))
       : [];
   },
 
+  // CR-066: GET /expenses-without-unit-prices → [{id, title}]
+  itemsWithoutPrices: (res) => {
+    const data = res?.data?.data ?? res?.data ?? [];
+    return Array.isArray(data)
+      ? data.filter((i) => (i.stock_title ?? '').trim() !== '')
+            .map((i) => ({ id: i.id, title: i.stock_title ?? '' }))
+      : [];
+  },
+
+  /**
+   * BUG-202-fwd-compat: PUT /expenses/{id} response → normalised item shape
+   * Success shape: { message, updated_expense: {id, stock_title, category_id, category_name} }
+   * 404 pseudo-shape: HTTP 201 with { errors: [{code:'not_found', message}] }
+   * Caller must check `res.data.errors` FIRST before invoking this transform.
+   * @returns {{id, title, categoryId, categoryName} | null}
+   */
+  updatedItem: (res) => {
+    const u = res?.data?.updated_expense ?? res?.data?.data ?? null;
+    if (!u) return null;
+    return {
+      id: u.id,
+      title: u.stock_title ?? u.title ?? '',
+      categoryId: u.category_id ?? null,
+      categoryName: u.category_name ?? '',
+    };
+  },
+
   /**
    * POST /bulk-export-expense → {message, downloadUrl}
+   * CR-074-A (2026-07-16): removed — no longer used after import/export UI removal.
    */
-  exportResponse: (res) => ({
-    message: res?.data?.message ?? 'Export ready',
-    downloadUrl: res?.data?.url ?? res?.data?.download_url ?? null,
-  }),
 };
 
 // =============================================================================
@@ -224,6 +255,9 @@ export const toAPI = {
       quantity: l.quantity ?? 0,
       unit: l.unit ?? '',
       physical_quantity: 0,           // deprecated — always 0
+      notes:            l.notes            ?? '',   // BUG-177
+      payment_made_to:  l.payment_made_to  ?? '',   // CR-087
+      payment_ref_id:   l.payment_ref_id   ?? '',   // CR-087
     })),
   }),
 
@@ -239,6 +273,9 @@ export const toAPI = {
     quantity: data.quantity ?? 0,
     unit: data.unit ?? '',
     physical_quantity: 0,               // deprecated — always 0
+    notes:            data.notes            ?? '',   // BUG-177
+    payment_made_to:  data.payment_made_to  ?? '',   // CR-087
+    payment_ref_id:   data.payment_ref_id   ?? '',   // CR-087
   }),
 
   /**

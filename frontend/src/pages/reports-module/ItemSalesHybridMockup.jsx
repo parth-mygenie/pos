@@ -107,7 +107,10 @@ const ItemSalesHybridMockup = () => {
   const initialTo   = urlTo   && /^\d{4}-\d{2}-\d{2}$/.test(urlTo)   ? urlTo   : sharedTo;
 
   // App Shell
-  const [isSidebarExpanded, setIsSidebarExpanded] = useState(false);
+  // BUG-361: persist sidebar state across reloads
+  const [isSidebarExpanded, setIsSidebarExpanded] = useState(
+    () => localStorage.getItem('mygenie_sidebar_expanded') === 'true'
+  );
   const [isSilentMode, setIsSilentMode] = useState(false);
 
   // Header — draft vs applied dates (carried from S2)
@@ -160,10 +163,10 @@ const ItemSalesHybridMockup = () => {
   const datesValid = appliedFrom && appliedTo && appliedFrom <= appliedTo;
   const draftDirty = fromDate !== appliedFrom || toDate !== appliedTo;
   const draftValid = fromDate && toDate && fromDate <= toDate;
-  // @audit:rule id="FE-25" name="MAX_RANGE_DAYS = 62"
-  //   explains="Hard cap: user cannot query more than 62 days at a time. Apply disables when draft exceeds."
+  // @audit:rule id="FE-25" name="MAX_RANGE_DAYS = 730" // BUG-353: lifted from 365 to 730 (2-year range)
+  //   explains="Hard cap: user cannot query more than 730 days at a time. Apply disables when draft exceeds. Audit tab has separate volume guard."
   //   approved=false approvedDate="" approvedSource=""
-  const MAX_RANGE_DAYS = 62;
+  const MAX_RANGE_DAYS = 730; // BUG-353: lifted from 365 — backend-agg endpoint (insights-items) has no cap
   const getDaysDiff = (f, t) => Math.round((new Date(t) - new Date(f)) / (1000 * 60 * 60 * 24));
   const draftRangeExceeded = draftValid && getDaysDiff(fromDate, toDate) > MAX_RANGE_DAYS;
   const canApply = draftDirty && draftValid && !draftRangeExceeded;
@@ -193,6 +196,7 @@ const ItemSalesHybridMockup = () => {
   // CR-049: Audit tab — lazy fetch raw orders only when audit tab is active (Option A)
   const [auditFetchResult, setAuditFetchResult] = useState(null);
   const [auditLoading, setAuditLoading] = useState(false);
+  const [auditVolumeExceeded, setAuditVolumeExceeded] = useState(false); // INV-001: volume guard
   const auditFetchedRef = useRef(false);
   useEffect(() => {
     if (activeTab !== 'audit' || !SHOW_AUDIT_TAB || auditFetchedRef.current) return;
@@ -200,7 +204,16 @@ const ItemSalesHybridMockup = () => {
     setAuditLoading(true);
     auditFetchedRef.current = true;
     getItemSalesAggregated(appliedFrom, appliedTo, 'created_at', schedules)
-      .then(result => { if (!cancelled) setAuditFetchResult(result); })
+      .then(result => {
+        if (cancelled) return;
+        // INV-001: Volume guard — FE audit aggregation is unsafe above ~5000 orders.
+        // Main view uses backend insights-items (safe at 1 year). Audit tab soft-caps here.
+        if ((result?.meta?.totalOrders || 0) > 5000) {
+          setAuditVolumeExceeded(true);
+        } else {
+          setAuditFetchResult(result);
+        }
+      })
       .catch(err => console.error('[CR-049] Audit lazy fetch failed:', err))
       .finally(() => { if (!cancelled) setAuditLoading(false); });
     return () => { cancelled = true; };
@@ -210,6 +223,7 @@ const ItemSalesHybridMockup = () => {
   useEffect(() => {
     auditFetchedRef.current = false;
     setAuditFetchResult(null);
+    setAuditVolumeExceeded(false); // INV-001: reset volume guard
   }, [appliedFrom, appliedTo]);
 
   // CR-049: Use backend rows for all tabs; audit data from lazy fetch for Audit tab
@@ -359,13 +373,17 @@ const ItemSalesHybridMockup = () => {
     const f2 = (d) => d.toISOString().slice(0, 10);
     let f, t;
     // @audit:rule id="FE-30" name="Date preset definitions (7D · 30D · MTD · FY)"
-    //   explains="7D = today + last 6 days (inclusive). 30D = today + last 29 days. MTD = month-start → today. FY = disabled (Coming soon)."
+    //   explains="7D = today + last 6 days. 30D = today + last 29. MTD = month-start → today. FY = last completed FY (Apr 1 → Mar 31). INV-001: FY enabled."
     //   approved=false approvedDate="" approvedSource=""
     switch (preset) {
       case 'Today': f = f2(now); t = f2(now); break;
       case '7D':  { const d = new Date(now); d.setDate(d.getDate() - 6);  f = f2(d); t = f2(now); break; }
       case '30D': { const d = new Date(now); d.setDate(d.getDate() - 29); f = f2(d); t = f2(now); break; }
       case 'MTD': { const d = new Date(now.getFullYear(), now.getMonth(), 1); f = f2(d); t = f2(now); break; }
+      case 'FY': { // INV-001: last completed FY (Apr 1 → Mar 31)
+        const fyEndYear = now.getMonth() >= 3 ? now.getFullYear() : now.getFullYear() - 1;
+        f = f2(new Date(fyEndYear - 1, 3, 1)); t = f2(new Date(fyEndYear, 2, 31)); break;
+      }
       default: return;
     }
     setFromDate(f); setToDate(t); setAppliedFrom(f); setAppliedTo(t); setActivePreset(preset);
@@ -846,7 +864,7 @@ const ItemSalesHybridMockup = () => {
     <div className="flex h-screen bg-white font-sans" data-testid="item-sales-hybrid-report-page">
       <Sidebar
         isExpanded={isSidebarExpanded}
-        setIsExpanded={setIsSidebarExpanded}
+        setIsExpanded={(v) => { setIsSidebarExpanded(v); localStorage.setItem('mygenie_sidebar_expanded', String(v)); }}
         isSilentMode={isSilentMode}
         setIsSilentMode={setIsSilentMode}
         onOpenSettings={() => {}}
@@ -860,7 +878,7 @@ const ItemSalesHybridMockup = () => {
       <main className="flex-1 flex flex-col overflow-hidden bg-zinc-50 relative">
 
         {/* Header */}
-        <header className="flex items-center justify-between px-8 py-5 bg-white border-b border-zinc-200" data-testid="reports-module-header">
+        <header className="flex items-center justify-between px-8 py-5 bg-white border-b border-zinc-200 flex-wrap gap-y-3" data-testid="reports-module-header"> {/* BUG-555 */}
           <div className="flex items-center gap-4">
             <button
               className="p-2 hover:bg-zinc-100 rounded-lg transition-colors"
@@ -890,7 +908,7 @@ const ItemSalesHybridMockup = () => {
             </div>
           </div>
 
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-3 flex-wrap">
             {/* Date Range Picker */}
             <div
               className={`flex items-center gap-2 px-3 py-2 border ${
@@ -927,7 +945,7 @@ const ItemSalesHybridMockup = () => {
                 />
               </label>
               {draftRangeExceeded && (
-                <span className="text-[10px] text-red-500 font-medium whitespace-nowrap">Max 2 months</span>
+                <span className="text-[10px] text-red-500 font-medium whitespace-nowrap">Max 1 year</span>
               )}
             </div>
 
@@ -949,7 +967,7 @@ const ItemSalesHybridMockup = () => {
             {/* Quick range presets */}
             <div className={`flex items-center gap-1 px-1.5 py-1 bg-zinc-100 rounded-lg ${isLoading ? 'opacity-50' : ''}`} data-testid="reports-date-presets">
               {['Today', '7D', '30D', 'MTD', 'FY'].map((p) => {
-                const isDisabled = p === 'FY';
+                const isDisabled = false; // INV-001: FY enabled
                 return (
                   <button
                     key={p}
@@ -963,7 +981,7 @@ const ItemSalesHybridMockup = () => {
                     }`}
                     data-testid={`reports-date-preset-${p.toLowerCase()}`}
                     onClick={() => !isDisabled && handlePreset(p)}
-                    title={isDisabled ? 'Coming soon — max range is 2 months' : ''}
+                    title={isDisabled ? 'Coming soon' : ''}
                   >
                     {p}
                   </button>
@@ -1398,6 +1416,12 @@ const ItemSalesHybridMockup = () => {
             </div>
           ) : activeTab === 'audit' ? (
             <div className="flex-1 bg-white border border-zinc-200 rounded-xl shadow-sm overflow-hidden flex flex-col" data-testid="audit-tab-panel">
+              {auditVolumeExceeded && (
+                <div className="px-6 py-3 bg-amber-50 border-b border-amber-200 flex items-center gap-2 text-sm text-amber-800" data-testid="audit-volume-warning">
+                  <span className="font-semibold">Date range too large for Audit:</span>
+                  Audit analysis supports up to ~5,000 orders. Select a shorter range (e.g. 60 days) to use the Audit tab.
+                </div>
+              )}
               <div className="px-6 py-4 border-b border-zinc-200 bg-gradient-to-r from-amber-50 to-white">
                 <div className="flex items-center gap-2 mb-1">
                   <ShieldAlert className="w-5 h-5 text-amber-600" />

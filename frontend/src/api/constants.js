@@ -6,6 +6,7 @@
 export const API_ENDPOINTS = {
   // Auth
   LOGIN: '/api/v1/auth/vendoremployee/login',
+  LOGOUT: '/api/v2/vendoremployee/employee-logout',     // CR-124: server-side token invalidation + FCM deregister
   
   // Profile
   PROFILE: '/api/v1/vendoremployee/profile',                                   // Owner override 2026-05-08: switched from v2 vendor-profile/profile → v1 profile (different path; new schema places `print_agent` at TOP LEVEL of response, not in restaurants[0])
@@ -13,12 +14,28 @@ export const API_ENDPOINTS = {
   // Menu
   CATEGORIES: '/api/v1/vendoremployee/get-categories',
   PRODUCTS: '/api/v1/vendoremployee/get-products-list',
+  POPULAR_FOOD: '/api/v2/vendoremployee/popular-food',   // CR-148
+  FOOD_COURT_ORDER_REPORT: '/api/v1/vendoremployee/food-court-order-report', // CR-157
+  // CR-147: Delivery Management
+  DELIVERY_CONFIG:        '/api/v2/vendoremployee/restaurant-settings/delivery-config',
+  UPDATE_DELIVERY_CONFIG: '/api/v2/vendoremployee/restaurant-settings/update-delivery-config',
+  DELIVERY_CHARGES:       '/api/v2/vendoremployee/restaurant-settings/delivery-charges',
+  DELIVERY_ZONES:         '/api/v2/vendoremployee/restaurant-settings/zones',
   
   // Table Operations (Phase 1C)
   TABLES: '/api/v1/vendoremployee/all-table-list',
   ORDER_TABLE_SWITCH: '/api/v2/vendoremployee/order/order-table-room-switch',
   MERGE_ORDER: '/api/v2/vendoremployee/order/transfer-order',
   TRANSFER_FOOD: '/api/v2/vendoremployee/order/transfer-food-item',
+
+  // CR-060: Table Management CRUD Endpoints
+  TABLE_CONFIG: '/api/v2/vendoremployee/restaurant-settings/table-config',
+  TABLE_CONFIG_STORE: '/api/v2/vendoremployee/restaurant-settings/table-config/store',
+  TABLE_CONFIG_AREA_OPTIONS: '/api/v2/vendoremployee/restaurant-settings/table-config/area-options',
+  TABLE_CONFIG_WAITER_LIST: '/api/v2/vendoremployee/restaurant-settings/table-config/waiter-list',
+  TABLE_CONFIG_EXPORT_SAMPLE: '/api/v2/vendoremployee/restaurant-settings/table-config/export-sample',
+  TABLE_CONFIG_EXPORT_LIST: '/api/v2/vendoremployee/restaurant-settings/table-config/export-list',
+  TABLE_CONFIG_IMPORT: '/api/v2/vendoremployee/restaurant-settings/table-config/import',
 
   // Cancel Operations (Phase 1C)
   CANCEL_ITEM: '/api/v2/vendoremployee/order/cancel-food-item',
@@ -42,6 +59,8 @@ export const API_ENDPOINTS = {
   CUSTOMER_UPDATE:   '/pos/customers',                                        // CRM: PUT /pos/customers/{id}
   ADDRESS_LOOKUP:    '/pos/address-lookup',                                   // CRM: POST /pos/address-lookup
   CUSTOMER_ADDRESSES: '/pos/customers',                                       // CRM: /pos/customers/{id}/addresses
+  // CR-129: CRM document management
+  CUSTOMER_DOCUMENTS: '/pos/customers',                                       // CRM: GET /pos/customers/{id}/documents
   // BUG-108 Phase C (CR-001C-LR, 2026-05-23) — loyalty redemption at billing.
   // Live in CRM preview; POS calls gated by `BUG108_FLAGS.loyaltyRedeemLive`.
   LOYALTY_REDEEM:    '/pos/loyalty/redeem',                                   // CRM: POST /pos/loyalty/redeem (POS Backend only — NOT called from POS Frontend)
@@ -55,23 +74,33 @@ export const API_ENDPOINTS = {
   COUPONS_VALIDATE:  '/pos/coupons/validate',                                 // CRM: POST /pos/coupons/validate
   // CR-002 Cross-Sell + Customer Intelligence (CRM 2.0, 2026-05-26)
   CUSTOMER_ORDER_SUGGESTIONS: '/pos/customers/order-suggestions',             // CRM: POST /pos/customers/order-suggestions
+  // CR-131: CRM Report endpoints (CR-078 Phase 1 contract — GET only, X-API-Key auth)
+  CRM_REPORT_SUMMARY:       '/pos/reports/summary',        // CR-131: restaurant snapshot (customers/lifecycle/tiers/revenue/loyalty)
+  CRM_REPORT_TOP_CUSTOMERS: '/pos/reports/top-customers',  // CR-131: ?sort_by=total_spent|total_visits|total_points&limit=1-100
+  CRM_REPORT_CHURN_RISK:    '/pos/reports/churn-risk',     // CR-131: ?band=high|medium&limit=1-200 — NO cache
   PLACE_ORDER:       '/api/v2/vendoremployee/order/place-order',          // CR-POS2-003-REOPEN-B (May-2026): reverted v1 → v2 per owner directive 2026-05-09. v2 confirmed deployed (HTTP 405 for GET, identical Laravel route shape as v1). Multipart shape unchanged. New order (unpaid + prepaid via payment_status=paid)
   PREPAID_ORDER:     '/api/v2/vendoremployee/order/paid-prepaid-order',    // Mark existing order as paid (JSON: {order_id, payment_status})
   UPDATE_ORDER:      '/api/v2/vendoremployee/order/update-place-order',   // Update existing order (add items)
   BILL_PAYMENT:      '/api/v2/vendoremployee/order/order-bill-payment',        // Collect bill on existing order
   // CR-017: WhatsApp Payment Link — generates Razorpay link + sends WhatsApp/SMS
   PAYMENT_LINK:      '/api/v1/razor-pay/payment-link',
+  // CR-165: Razorpay cancel-and-refund (v2, Bearer auth, no restaurant_id)
+  RAZORPAY_CANCEL_REFUND: '/api/v2/vendoremployee/order/cancel-and-refund-order',
+  // CR-163: Split room order items to a new walk-in order
+  SPLIT_ROOM_ORDER:  '/api/v2/vendoremployee/order/split-room-order',
   EDIT_ORDER_ITEM:       'TBD',   // CHG-040: Edit placed item qty/notes
   EDIT_ORDER_ITEM_QTY:   'TBD',   // CHG-040 future: Edit placed item qty only
   
   // Room Operations (Phase 2A + 2B)
   ROOM_CHECK_IN: '/api/v1/vendoremployee/pos/user-group-check-in',
-  ORDER_SHIFTED_ROOM: '/api/v2/vendoremployee/order/order-shifted-room',
+  ORDER_SHIFTED_ROOM: '/api/v1/vendoremployee/order/order-shifted-room',  // CR-405-B: v1 = new contract (source_order_id + target_order_id)
   // CR-004 Phase 2 — endpoint that returns the full set of currently-active
   // rooms (independent of order-creation date). Used to drive the cross-day
   // in-house view on /reports/rooms.
   GET_ROOM_LIST: '/api/v2/vendoremployee/get-room-list',
-  
+  // CR-162: Mid-stay partial payment for room orders
+  ROOM_RECORD_PAYMENT: '/api/v2/vendoremployee/pos/room-payment',
+
   // Split Bill
   SPLIT_ORDER: '/api/v2/vendoremployee/order/split-order',
 
@@ -84,6 +113,13 @@ export const API_ENDPOINTS = {
   // CR-019: Restaurant Settings (Self-Onboarding Wizard)
   RESTAURANT_SETTINGS_LIST: '/api/v2/vendoremployee/restaurant-settings/settings-list',
   RESTAURANT_SETTINGS_UPDATE: '/api/v2/vendoremployee/restaurant-settings/update-settings',
+  PRINTER_AGENT_CONFIG: '/api/v2/vendoremployee/restaurant-settings/printer-agent-config', // CR-133
+  STATION_CONFIG_AREA_OPTIONS: '/api/v2/vendoremployee/restaurant-settings/printer-config/area-options',  // CR-167/CR-161
+  PRINTER_MAPPING:     '/api/v2/vendoremployee/restaurant-settings/printer-mapping',       // CR-160
+  STATION_PRINTER_MAP: '/api/v2/vendoremployee/restaurant-settings/station-printer-map',   // CR-359
+  STATION_CONFIG:      '/api/v2/vendoremployee/restaurant-settings/printer-config',        // CR-161
+  PRINTING_OPTION: '/api/v2/vendoremployee/restaurant-settings/printing-option',   // CR-161
+  BILL_PRINTER_CONFIG: '/api/v2/vendoremployee/restaurant-settings/bill-printer-config',  // CR-351
   
   // Orders (Phase 1 Part B)
   RUNNING_ORDERS: '/api/v1/vendoremployee/pos/employee-orders-list',
@@ -98,6 +134,10 @@ export const API_ENDPOINTS = {
   SINGLE_ORDER_NEW: '/api/v2/vendoremployee/get-single-order-new',
   DAILY_SALES_REPORT: '/api/v2/vendoremployee/daily-sales-revenue-report',
   ORDER_LOGS_REPORT: '/api/v2/vendoremployee/report/order-logs-report',
+  TOP_FOOD_SALES_REPORT: '/api/v1/vendoremployee/top-food%20sales-report', // CR-136
+  // CR-117: Order Report Beta — backend-aggregated combined endpoint
+  ORDER_REPORT_BETA_COMBINED: '/api/v1/vendoremployee/daily-order-report-details-combined',
+  ORDER_REPORT_BETA_EXCEL: '/api/v1/vendoremployee/daily-order-report-excel-export-combined',
 
   // CR-049: Backend aggregation endpoints (Insights module migration)
   INSIGHTS_DASHBOARD:     '/api/v2/vendoremployee/report/insights-dashboard',
@@ -119,6 +159,122 @@ export const API_ENDPOINTS = {
   CREDIT_CUSTOMER_LIST:   '/api/v1/vendoremployee/pos/tap-waiter-list',           // POST {} → { "employee-tap-list": [...] }
   CREDIT_CUSTOMER_DETAIL: '/api/v2/vendoremployee/pos/tap-customer-record-list',  // GET ?customer_id={id}
   CREDIT_PAYMENT_INSERT:  '/api/v1/vendoremployee/pos/tap-waiter-order-insert',   // POST payment payload
+
+  // CR-069: Employee Management
+  EMPLOYEES_LIST: '/api/v2/vendoremployee/employee/employees-list',
+  EMPLOYEES_ADD: '/api/v2/vendoremployee/employee/employees-add',
+  EMPLOYEES_UPDATE: '/api/v2/vendoremployee/employee/employees-update',   // /{id}
+  EMPLOYEE_STATUS: '/api/v2/vendoremployee/employee/employee-status',     // /{id}
+
+  // CR-069: Role Management
+  ROLE_LIST: '/api/v1/vendoremployee/employee/role-list',
+  ROLE_ADD: '/api/v1/vendoremployee/employee/role-add',
+  ROLE_UPDATE: '/api/v1/vendoremployee/employee/role-update',             // /{id}
+  ALL_ROLE_LIST: '/api/v2/vendoremployee/employee/all-role-list',
+  ROLE_MASTER_LIST: '/api/v1/vendoremployee/employee/role-master-list',
+
+  // CR-166: Common Login / Franchise / CS multi-restaurant auth endpoints
+  COMMON_LOGIN:         '/api/v1/auth/vendoremployee/common-login',
+  ASSIGNED_RESTAURANTS: '/api/v1/auth/adminemployee/assigned-restaurants',
+  LOGIN_AS_RESTAURANT:  '/api/v1/auth/adminemployee/login-as-restaurant',
+  COMMON_LOGOUT:        '/api/v1/auth/adminemployee/logout',
+};
+
+// CR-072: Inventory Management
+export const INVENTORY_ENDPOINTS = {
+  // Ingredients Master
+  GET_INVENTORY_MASTER: '/api/v2/vendoremployee/inventory/get-inventory-master',
+  ADD_INVENTORY: '/api/v2/vendoremployee/inventory/add-inventory',
+  DELETE_INGREDIENT: '/api/v2/vendoremployee/inventory/ingredient',
+  UPDATE_INVENTORY: '/api/v2/vendoremployee/inventory/update-inventory',  // PUT /{id} — BUG-212
+  EXPORT_INVENTORY: '/api/v2/vendoremployee/inventory/export-inventory-master',
+  IMPORT_INVENTORY: '/api/v2/vendoremployee/inventory/import-inventory',
+  EXPORT_SAMPLE_INVENTORY: '/api/v2/vendoremployee/inventory/export-sample-inventory', // BUG-221: template
+  // Categories
+  STOCK_CATEGORIES: '/api/v2/vendoremployee/inventory/stock-item-categories',
+  STORE_CATEGORY: '/api/v2/vendoremployee/inventory/stock-item-categories/store',
+  DELETE_STOCK_CATEGORY: '/api/v2/vendoremployee/inventory/stock-item-categories/delete', // CR-090
+  // Stock
+  STOCK_INVENTORY: '/api/v2/vendoremployee/inventory/stock-inventory',
+  UNIT_INVENTORY: '/api/v2/vendoremployee/inventory/unit-inventory',
+  UPDATE_STOCK: '/api/v2/vendoremployee/inventory/update-stock',
+  ADD_STOCK: '/api/v2/vendoremployee/inventory/add-stock',
+  ADD_PURCHASE: '/api/v2/vendoremployee/inventory/add-purchase',
+  EXPORT_STOCK: '/api/v2/vendoremployee/inventory/export-stock',
+  IMPORT_STOCK: '/api/v2/vendoremployee/inventory/upload-stock-excel',
+  // Vendors
+  VENDOR_TYPE: '/api/v2/vendoremployee/inventory/vendor-type',
+  ADD_VENDOR: '/api/v2/vendoremployee/inventory/add-vendor',
+  // CR-084: Vendor CRUD endpoints
+  GET_VENDOR: '/api/v2/vendoremployee/inventory/get-vendor',
+  UPDATE_VENDOR: '/api/v2/vendoremployee/inventory/update-vendor',   // PUT /{id}
+  DELETE_VENDOR: '/api/v2/vendoremployee/inventory/vendor-delete',   // DELETE /{id}
+  // Wastage
+  WASTAGE_REASONS: '/api/v2/vendoremployee/inventory/wastage-reasons',
+  // BUG-197 #3: Wastage CRUD (different base path)
+  WASTAGE_LIST: '/api/v2/vendoremployee/wastage-reasons/list',
+  ADD_WASTAGE_REASON: '/api/v2/vendoremployee/wastage-reasons/add',
+  UPDATE_WASTAGE_REASON: '/api/v2/vendoremployee/wastage-reasons/update',
+  WASTAGE_REASON_STATUS: '/api/v2/vendoremployee/wastage-reasons/status',
+  DELETE_WASTAGE_REASON: '/api/v2/vendoremployee/wastage-reasons/delete',
+  // CR-153: Wastage Report endpoints
+  WASTAGE_REPORT:   '/api/v2/vendoremployee/inventory/wastage-report',
+  TOP_WASTED_ITEMS: '/api/v2/vendoremployee/inventory/top-wasted-items',
+  // CR-078: Smart Purchase — vendor purchase history
+  VENDOR_ITEM_LIST: '/api/v2/vendoremployee/inventory/vendor-item-list',
+  // BUG-sub-recipe-stock: sub-recipe items use a separate add-stock endpoint
+  ADD_SUB_RECIPE_STOCK: '/api/v2/vendoremployee/inventory/add-sub-recipe-stock',
+};
+
+// CR-077: Inventory Transfer (Phase 1 — Receive + Reject)
+export const INVENTORY_TRANSFER_ENDPOINTS = {
+  PENDING_QUEUES: '/api/v2/vendoremployee/inventory-transfer/pending-queues',
+  DETAILS: '/api/v2/vendoremployee/inventory-transfer/details',
+  RECEIVE: '/api/v2/vendoremployee/inventory-transfer/receive',
+  REJECT: '/api/v2/vendoremployee/inventory-transfer/reject',
+};
+
+// CR-078: Smart Purchase — reporting endpoints (different URL prefix from inventory)
+export const REPORT_ENDPOINTS = {
+  DAILY_CONSUMPTION_REPORT: '/api/v2/vendoremployee/report/daily-consumption-report',
+};
+
+// CR-072: Recipe Management
+export const RECIPE_ENDPOINTS = {
+  // Standard Recipes
+  GET_RECIPES: '/api/v2/vendoremployee/recipe/get-recipe',
+  STORE_RECIPE: '/api/v2/vendoremployee/recipe/store-recipe',
+  UPDATE_RECIPE: '/api/v2/vendoremployee/recipe/update-recipe',
+  DELETE_RECIPE: '/api/v2/vendoremployee/recipe/delete-recipe',
+  EXPORT_SAMPLE_RECIPE: '/api/v2/vendoremployee/recipe/export-sample-recipe',
+  EXPORT_RECIPE: '/api/v2/vendoremployee/recipe/export-recipe',
+  IMPORT_RECIPE: '/api/v2/vendoremployee/recipe/import-recipe',
+  // Sub-Recipes
+  GET_SUB_RECIPES: '/api/v2/vendoremployee/recipe/sub-recipes',
+  STORE_SUB_RECIPE: '/api/v2/vendoremployee/recipe/store-sub-recipe',
+  UPDATE_SUB_RECIPE: '/api/v2/vendoremployee/recipe/update-sub-recipe',
+  DELETE_SUB_RECIPE: '/api/v2/vendoremployee/recipe/delete-sub-recipe',
+  EXPORT_SAMPLE_SUB: '/api/v2/vendoremployee/recipe/export-sample-sub-recipe',
+  EXPORT_SUB: '/api/v2/vendoremployee/recipe/export-sub-recipes',
+  IMPORT_SUB: '/api/v2/vendoremployee/recipe/import-sub-recipes',
+  // Addon Recipes
+  GET_ADDON_RECIPES: '/api/v2/vendoremployee/product/addon-recipe-list',
+  STORE_ADDON_RECIPE: '/api/v2/vendoremployee/product/store-addon-recipe',
+  UPDATE_ADDON_RECIPE: '/api/v2/vendoremployee/product/update-addon-recipe',
+  DELETE_ADDON_RECIPE: '/api/v2/vendoremployee/product/delete-addon-recipe',
+  // Supporting
+  ACTIVE_FOODS_LIST: '/api/v2/vendoremployee/product/active-foods-list',
+  ACTIVE_ADDONS_LIST: '/api/v2/vendoremployee/product/addon-list',  // BUG-197 B2-4: addon items for recipe form
+};
+
+// CR-119: Aggregator Food → Recipe Mapping
+export const RECIPE_MAPPING_ENDPOINTS = {
+  RESTAURANT_CLIENTS: '/api/v2/vendoremployee/product/restaurant-clients',
+  FOOD_RECIPE_MAPPING: '/api/v2/vendoremployee/recipe/food-recipe-mapping',
+  UPDATE_RECIPE_MAPPING: '/api/v2/vendoremployee/recipe/update-recipe-mapping',
+  UNLINK_RECIPE_MAPPING: '/api/v2/vendoremployee/recipe/unlink-recipe-mapping',
+  BATCH_RECIPE_MAPPING: '/api/v2/vendoremployee/recipe/update-recipe-mapping-batch',
+  EXPORT_RECIPE_MAPPING: '/api/v2/vendoremployee/recipe/export-recipe-mapping',
 };
 
 // =============================================================================
@@ -171,6 +327,7 @@ export const STATION_TYPES = {
 
 // f_order_status (API) → frontend status key
 export const F_ORDER_STATUS = {
+  0: 'aggregatorNew',  // CR-106: incoming aggregator order (Swiggy/Zomato)
   1: 'preparing',
   2: 'ready',
   3: 'cancelled',
@@ -297,13 +454,15 @@ export const API_LOADING_ORDER = [
   { key: 'tables', label: 'Tables', endpoint: 'TABLES' },
   { key: 'cancellationReasons', label: 'Settings', endpoint: 'CANCELLATION_REASONS' },
   { key: 'runningOrders', label: 'Running Orders', endpoint: 'RUNNING_ORDERS' },
+  { key: 'popularFood', label: 'Popular Items', endpoint: 'POPULAR_FOOD' }, // BUG-340
+  { key: 'aggregatorOrders', label: 'Aggregator Orders', endpoint: 'AGGREGATOR_ORDER_LIST' }, // BUG-599
 ];
 
 // =============================================================================
 // DEFAULT PAGINATION
 // =============================================================================
 export const PAGINATION = {
-  DEFAULT_LIMIT: 100, // Load all for caching
+  DEFAULT_LIMIT: 2000, // BUG-451: single-page full menu load; backend probed OK up to 5000 (2026-09-24)
   DEFAULT_OFFSET: 1,
   PRODUCTS_TYPE: 'all',
 };
@@ -318,6 +477,7 @@ export const STORAGE_KEYS = {
   // BUG-130: Cleared on logout so a newly-enabled channel (via Restaurant
   // Settings) becomes visible on next login. See authService.logout().
   CHANNEL_VISIBILITY: 'mygenie_channel_visibility',
+  COMMON_TOKEN: 'common_auth_token',  // CR-166: CS/franchise common session token (separate from restaurant AUTH_TOKEN)
 };
 
 // =============================================================================
@@ -332,22 +492,110 @@ export const EXPENSE_ENDPOINTS = {
   UPDATE_CATEGORY: '/api/v2/vendoremployee/expense/expenses',       // PUT /{category_id}
   CATEGORY: '/api/v2/vendoremployee/expense/category',              // POST (create empty), PUT /{id} (rename), DELETE /{id}  // BUG-159 + BUG-160
   DELETE_ITEM: '/api/v2/vendoremployee/expense/expenses',           // DELETE /{item_id}
-  BULK_EXPORT: '/api/v2/vendoremployee/expense/bulk-export-expense',
-  BULK_IMPORT: '/api/v2/vendoremployee/expense/bulk-import-expense',
-  STOCK_SAMPLE: '/bulk_upload_sample/expense/expense_stock_sample.xlsx',
+  STOCK_ITEM_UPDATE: '/api/v2/vendoremployee/expense/expenses',     // PUT /{item_id}  // BUG-202-fwd-compat: atomic rename + category move
+  // CR-074-A: removed BULK_EXPORT/BULK_IMPORT/STOCK_SAMPLE (item-master import/export UI removed 2026-07-16)
   // Transactions
   EXPENSES_REPORT: '/api/v2/vendoremployee/expense/expenses-report',
   STORE_EXPENSE_DETAILS: '/api/v2/vendoremployee/expense/store-expense-details',
   EDIT_EXPENSE: '/api/v2/vendoremployee/expense/edit-expense',      // PUT /{id}
   DELETE_EXPENSE: '/api/v2/vendoremployee/expense/delete-expense',  // DELETE /{id} — BUG-152
-  EXPORT_REPORT: '/api/v2/vendoremployee/expense/expenses-export-report',
-  DOWNLOAD_SAMPLE: '/api/v2/vendoremployee/expense/download-semple',
-  IMPORT_EXPENSE: '/api/v2/vendoremployee/expense/import-expense',
+  // CR-074-A: removed EXPORT_REPORT/DOWNLOAD_SAMPLE/IMPORT_EXPENSE (dead code — never called from UI)
   // Unit Prices
   STOCK_UNIT_PRICES: '/api/v2/vendoremployee/expense/stock-unit-prices',
+  EXPENSE_AGGREGATION: '/api/v2/vendoremployee/expense/expense-aggregation', // CR-062: server-side aggregation
   WITHOUT_UNIT_PRICES: '/api/v2/vendoremployee/expense/expenses-without-unit-prices',
   UNIT_PRICE: '/api/v2/vendoremployee/expense/stock-unit-price',    // POST, PUT /{id}, DELETE /{id}
   // Reference Data
   PAYMENT_METHOD: '/api/v2/vendoremployee/expense/payment-method',
   GET_UNIT: '/api/v2/vendoremployee/expense/get-unit',
+  ITEM_IMPACT: '/api/v2/vendoremployee/expense/item',  // BUG-201: GET /{id}/impact
+};
+
+// CR-094: Profit & Loss Report
+export const PL_REPORT_ENDPOINT = '/api/v1/vendoremployee/profit-loss-report';
+
+// CR-106: AGGREGATOR MODULE ENDPOINTS (UrbanPiper — Swiggy/Zomato)
+export const AGGREGATOR_ENDPOINTS = {
+  ORDER_LIST: '/api/v1/vendoremployee/urbanpiper/get-order-list',
+  ORDER_STATUS_UPDATE: '/api/v1/urbanpiper/orders-status-update',
+  MANUALLY_PRINT: '/api/v1/urbanpiper/manually-print-aggregator', // CR-118: manual KOT/bill print
+};
+
+// CR-135: Aggregator Config + Setup endpoints
+export const AGGREGATOR_CONFIG_ENDPOINTS = {
+  CONFIG:       '/api/v2/vendoremployee/aggregator-config',
+  CLIENTS:      '/api/v2/vendoremployee/aggregator-config/restaurant-clients',
+  PUSH_STORE:   '/api/v2/vendoremployee/aggregator-config/push-store',
+  STORE_TOGGLE: '/api/v2/vendoremployee/aggregator-config/store-toggle',
+};
+
+// CR-106: Cancel reason codes (identical for Swiggy & Zomato via UrbanPiper)
+export const AGGREGATOR_CANCEL_REASONS = [
+  { code: 'ITEM_OUT_OF_STOCK', label: 'Item Out of Stock' },
+  { code: 'STORE_CLOSED', label: 'Store Closed' },
+  { code: 'STORE_BUSY', label: 'Store Busy' },
+  { code: 'RIDER_NOT_AVAILABLE', label: 'Rider Not Available' },
+  { code: 'OUT_OF_DELIVERY_RADIUS', label: 'Out of Delivery Radius' },
+  { code: 'CONNECTIVITY_ISSUE', label: 'Connectivity Issue' },
+  { code: 'TOTAL_MISSMATCH', label: 'Total Mismatch' },
+  { code: 'INVALID_ITEM', label: 'Invalid Item' },
+  { code: 'OPTION_OUT_OF_STOCK', label: 'Option Out of Stock' },
+  { code: 'INVALID_OPTION', label: 'Invalid Option' },
+  { code: 'UNSPECIFIED', label: 'Other / Unspecified' },
+];
+
+// CR-140 + CR-141: Aggregator Sync Operations endpoints
+export const AGGREGATOR_SYNC_ENDPOINTS = {
+  STOCK_TOGGLE:          '/api/v2/vendoremployee/aggregator-sync/stock-toggle',        // CR-140
+  SYNC_CATALOG:          '/api/v2/vendoremployee/aggregator-sync/sync-catalog',        // CR-141
+  CLEAR_CATALOG:         '/api/v2/vendoremployee/aggregator-sync/clear-catalog',       // CR-141
+  CLEAR_MODIFIERS:       '/api/v2/vendoremployee/aggregator-sync/clear-modifiers',     // CR-141
+  CATEGORY_TIMINGS:      '/api/v2/vendoremployee/aggregator-sync/category-timings',    // CR-141
+  CATEGORY_TIMINGS_PUSH: '/api/v2/vendoremployee/aggregator-sync/category-timings/push', // CR-141
+  RESTAURANT_CLIENTS:    '/api/v2/vendoremployee/product/restaurant-clients',          // CR-140
+  // CR-143: Aggregator Leftover endpoints
+  FORCE_SWIGGY_ENABLE: '/api/v2/vendoremployee/aggregator-sync/force-swiggy-enable',
+  BULK_ACTIONS_ADDONS: '/api/v2/vendoremployee/aggregator-sync/bulk-actions/addons',
+  BULK_ACTIONS_ITEMS:  '/api/v2/vendoremployee/aggregator-sync/bulk-actions/items',
+  BULK_ACTIONS_APPLY:  '/api/v2/vendoremployee/aggregator-sync/bulk-actions/apply',
+  TOGGLE_ADDON:        '/api/v2/vendoremployee/aggregator-sync/bulk-actions/toggle-addon',
+  VARIATIONS:          '/api/v2/vendoremployee/aggregator-sync/variations',
+  TOGGLE_VARIATION:    '/api/v2/vendoremployee/aggregator-sync/toggle-variation',
+};
+
+// CR-358-P1: AIOSELL Channel Manager + PMS endpoints
+// All P1 endpoints probed and verified on preprod (restaurant 69) 2026-08-31.
+// P3/P4 stubs declared here but only wired in their respective phases — inert in P1.
+export const AIOSELL_ENDPOINTS = {
+  // P1 — all backend-verified working
+  STATUS:              '/api/v2/vendoremployee/aiosell/status',
+  PROPERTY:            '/api/v2/vendoremployee/aiosell/property',
+  START:               '/api/v2/vendoremployee/aiosell/start',
+  STOP:                '/api/v2/vendoremployee/aiosell/stop',
+  ROOMS:               '/api/v2/vendoremployee/aiosell/rooms',
+  ROOM_MAPPING:        '/api/v2/vendoremployee/aiosell/room-mapping',
+  PUSH_INVENTORY:      '/api/v2/vendoremployee/aiosell/push-inventory',
+  FETCH_INVENTORY:     '/api/v2/vendoremployee/aiosell/fetch-inventory',
+  FETCH_RESERVATIONS:  '/api/v2/vendoremployee/aiosell/fetch-reservations',
+  // P2 — unblocked (BUG-BE-03/04 verified 2026-09-01), wired in Phase 2
+  DIRECT_RESERVATION:  '/api/v2/vendoremployee/aiosell/direct-reservation',
+  LOCAL_CHECKIN:       '/api/v1/vendoremployee/pos/user-group-check-in',
+  ROOM_AVAILABILITY:   '/api/v2/vendoremployee/aiosell/room-availability', // CR-385 M1 BQ-385-06 (P2 Entry Verification E16)
+  // P3 — wired in Phase 3
+  LOCAL_RESERVATIONS:  '/api/v2/vendoremployee/aiosell/local-reservations',
+  DASHBOARD_KPIS:      '/api/v2/vendoremployee/aiosell/dashboard-kpis',
+  // P4 — both endpoints DELIVERED 2026-09-02 via handover_3.md
+  ROOM_STATUS:         '/api/v2/vendoremployee/aiosell/room-status',
+  ROOM_STATUS_BOARD:   '/api/v2/vendoremployee/aiosell/room-status-board',
+  // P5 — wired in Phase 5
+  PUSH_RATES:              '/api/v2/vendoremployee/aiosell/push-rates',
+  FETCH_RATES:             '/api/v2/vendoremployee/aiosell/fetch-rates',
+  PUSH_INVENTORY_RESTRICT: '/api/v2/vendoremployee/aiosell/push-inventory-restrictions',
+  PUSH_RATE_RESTRICT:      '/api/v2/vendoremployee/aiosell/push-rate-restrictions',
+  MARK_NO_SHOW:            '/api/v2/vendoremployee/aiosell/mark-no-show',
+  // CR-362 — Booking Modification & Cancellation
+  EXTEND_STAY:             '/api/v2/vendoremployee/pos/room-extend-stay',         // CR-362: POST {order_id, new_checkout_date, new_room_price, reason}
+  // CR-363 + CR-366 — PMS Reports (shipped 2026-09-14, BE reply confirmed)
+  NIGHT_AUDIT:             '/api/v2/vendoremployee/aiosell/night-audit',          // CR-363: GET ?date=YYYY-MM-DD
+  REVENUE_SUMMARY:         '/api/v2/vendoremployee/aiosell/revenue-summary',      // CR-366: GET ?start_date&end_date&group_by
 };

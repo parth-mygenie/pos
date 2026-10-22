@@ -129,7 +129,10 @@ const PrepServeTimeMockup = () => {
   const { restaurant } = useRestaurant();
   const schedules = restaurant?.schedules || [];
 
-  const [isSidebarExpanded, setIsSidebarExpanded] = useState(false);
+  // BUG-361: persist sidebar state across reloads
+  const [isSidebarExpanded, setIsSidebarExpanded] = useState(
+    () => localStorage.getItem('mygenie_sidebar_expanded') === 'true'
+  );
   const [showDownloadMenu, setShowDownloadMenu] = useState(false);
   const [activeView, setActiveView] = useState('overview');
 
@@ -161,7 +164,7 @@ const PrepServeTimeMockup = () => {
     switch (preset) {
       case 'Today': f = f2(now); t = f2(now); break;
       case '7D':  { const d = new Date(now); d.setDate(d.getDate() - 6);  f = f2(d); t = f2(now); break; }
-      case '30D': { const d = new Date(now); d.setDate(d.getDate() - 29); f = f2(d); t = f2(now); break; }
+      case 'LM': { f = f2(new Date(now.getFullYear(), now.getMonth()-1, 1)); t = f2(new Date(now.getFullYear(), now.getMonth(), 0)); break; } // CR-422
       case 'MTD': { const d = new Date(now.getFullYear(), now.getMonth(), 1); f = f2(d); t = f2(now); break; }
       default: return;
     }
@@ -302,12 +305,12 @@ const PrepServeTimeMockup = () => {
 
   return (
     <div className="flex h-screen bg-white font-sans" data-testid="prepserve-page">
-      <Sidebar isExpanded={isSidebarExpanded} setIsExpanded={setIsSidebarExpanded} onOpenSettings={() => {}} onOpenMenu={() => {}} onOpenCredit={() => {}} onRefresh={() => {}} isRefreshing={false} isOrderEntryOpen={false} />
+      <Sidebar isExpanded={isSidebarExpanded} setIsExpanded={(v) => { setIsSidebarExpanded(v); localStorage.setItem('mygenie_sidebar_expanded', String(v)); }} onOpenSettings={() => {}} onOpenMenu={() => {}} onOpenCredit={() => {}} onRefresh={() => {}} isRefreshing={false} isOrderEntryOpen={false} />
 
       <div className="flex-1 flex overflow-hidden">
         <main className="flex-1 flex flex-col overflow-hidden bg-zinc-50">
           {/* Header */}
-          <header className="flex items-center justify-between px-8 py-5 bg-white border-b border-zinc-200 shrink-0" data-testid="prepserve-header">
+          <header className="flex items-center justify-between px-8 py-5 bg-white border-b border-zinc-200 shrink-0 flex-wrap gap-y-3" data-testid="prepserve-header"> {/* BUG-555 */}
             <div className="flex items-center gap-4">
               <button className="p-2 hover:bg-zinc-100 rounded-lg transition-colors" data-testid="prepserve-back-btn" onClick={() => navigate('/reports-module/dashboard')}>
                 <ArrowLeft className="w-5 h-5 text-zinc-600" />
@@ -322,7 +325,7 @@ const PrepServeTimeMockup = () => {
               </div>
             </div>
 
-            <div className="flex items-center gap-3">
+            <div className="flex items-center gap-3 flex-wrap">
               <div className={`flex items-center gap-2 px-3 py-2 border ${draftDirty && draftValid ? 'border-[#F26B33]' : 'border-zinc-200'} bg-white rounded-lg transition-colors ${isLoading ? 'opacity-50' : ''}`} data-testid="prepserve-daterange">
                 <CalendarIcon className="w-4 h-4 text-zinc-500" />
                 <label className="flex items-center gap-1.5 text-sm text-zinc-600">
@@ -341,7 +344,7 @@ const PrepServeTimeMockup = () => {
               </button>
 
               <div className={`flex items-center gap-1 px-1.5 py-1 bg-zinc-100 rounded-lg ${isLoading ? 'opacity-50' : ''}`} data-testid="prepserve-presets">
-                {['Today', '7D', '30D', 'MTD'].map((p) => (
+                {['Today', '7D', 'LM', 'MTD'].map((p) => (
                   <button key={p} disabled={isLoading} className={`px-2.5 py-1 text-xs font-medium rounded-md transition-all ${activePreset === p ? 'bg-white text-zinc-900 shadow-sm' : 'text-zinc-600 hover:bg-white/50'}`} data-testid={`prepserve-preset-${p.toLowerCase()}`} onClick={() => handlePreset(p)}>
                     {p}
                   </button>

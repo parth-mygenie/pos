@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { GripVertical, Zap, Pencil, Trash2, Power } from "lucide-react";
 import { COLORS } from "../../../constants";
+import AggregatorStockToggle from './AggregatorStockToggle'; // CR-140
 
 const getFoodDot = (product) => {
   if (product.hasEgg) return { color: "#F59E0B", label: "Egg" };
@@ -23,7 +24,7 @@ const ChannelChip = ({ label, active }) => (
 );
 
 // ─── Quick Edit Form (inline) ──────────────────────────────────────────────
-const QuickEditForm = ({ product, categories, currencySymbol, onSave, onCancel }) => {
+const QuickEditForm = ({ product, categories, currencySymbol, onSave, onCancel, menuType, clients }) => { // CR-140 A
   const [form, setForm] = useState({
     productName: product.productName || "",
     categoryId: product.categoryId || "",
@@ -54,6 +55,11 @@ const QuickEditForm = ({ product, categories, currencySymbol, onSave, onCancel }
     // CR-010: Weight-based billing
     itemUnit: product.itemUnit || '',
     itemUnitPrice: product.itemUnitPrice || 0,
+    // CR-140: Aggregator platform fields
+    swiggy:            product.swiggy !== false,
+    zomato:            product.zomato !== false,
+    clientId:          product.clientId ?? 0,
+    swiggyPackingChrg: product.swiggyPackingChrg || false, // BUG-326
   });
 
   const update = (key, val) => setForm((p) => ({ ...p, [key]: val }));
@@ -63,6 +69,33 @@ const QuickEditForm = ({ product, categories, currencySymbol, onSave, onCancel }
       <div className="text-sm font-semibold mb-3" style={{ color: COLORS.darkText }}>Quick Edit</div>
       <hr style={{ borderColor: COLORS.borderGray }} className="mb-3" />
 
+      {/* Aggregator: Platform Sync row — CR-140 OD-1=A */}
+      {menuType === 'Aggregator' && (
+        <div className="grid grid-cols-3 gap-3 mb-3">
+          <div>
+            <label className="text-xs mb-1 block" style={{ color: COLORS.grayText }}>Swiggy</label>
+            <select value={form.swiggy ? 'yes' : 'no'} onChange={e => update('swiggy', e.target.value === 'yes')}
+              className="w-full px-3 py-2 text-sm rounded-lg border outline-none bg-white" style={{ borderColor: COLORS.borderGray }}>
+              <option value="yes">Yes</option><option value="no">No</option>
+            </select>
+          </div>
+          <div>
+            <label className="text-xs mb-1 block" style={{ color: COLORS.grayText }}>Zomato</label>
+            <select value={form.zomato ? 'yes' : 'no'} onChange={e => update('zomato', e.target.value === 'yes')}
+              className="w-full px-3 py-2 text-sm rounded-lg border outline-none bg-white" style={{ borderColor: COLORS.borderGray }}>
+              <option value="yes">Yes</option><option value="no">No</option>
+            </select>
+          </div>
+          <div>
+            <label className="text-xs mb-1 block" style={{ color: COLORS.grayText }}>Brand</label>
+            <select value={form.clientId ?? 0} onChange={e => update('clientId', Number(e.target.value))}
+              className="w-full px-3 py-2 text-sm rounded-lg border outline-none bg-white" style={{ borderColor: COLORS.borderGray }}>
+              <option value={0}>Main</option>
+              {(clients || []).map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+            </select>
+          </div>
+        </div>
+      )}
       {/* Row 1: Name + Sold By */}
       <div className="grid grid-cols-12 gap-3 mb-3">
         <div className="col-span-8">
@@ -120,6 +153,7 @@ const QuickEditForm = ({ product, categories, currencySymbol, onSave, onCancel }
             className="w-full px-3 py-2 text-sm rounded-lg border outline-none"
             style={{ borderColor: COLORS.borderGray }}
             data-testid="quick-edit-price"
+            onWheel={e => e.target.blur()} // BUG-392
           />
         </div>
       </div>
@@ -178,6 +212,7 @@ const QuickEditForm = ({ product, categories, currencySymbol, onSave, onCancel }
             className="w-full px-3 py-2 text-sm rounded-lg border outline-none"
             style={{ borderColor: COLORS.borderGray }}
             step="0.01"
+            onWheel={e => e.target.blur()} // BUG-392
           />
         </div>
         <div>
@@ -211,6 +246,21 @@ const QuickEditForm = ({ product, categories, currencySymbol, onSave, onCancel }
           </select>
         </div>
       </div>
+      {/* BUG-326: Swiggy packing charge — aggregator food only */}
+      {product.foodFor === 'Aggregator' && (
+        <div className="grid grid-cols-2 gap-3 mb-3">
+          <div>
+            <label className="text-xs mb-1 block" style={{ color: COLORS.grayText }}>Swiggy Pack Chrg</label>
+            <select value={form.swiggyPackingChrg ? "yes" : "no"}
+                    onChange={(e) => update("swiggyPackingChrg", e.target.value === "yes")}
+                    className="w-full px-3 py-2 text-sm rounded-lg border outline-none bg-white"
+                    style={{ borderColor: COLORS.borderGray }}>
+              <option value="no">No</option>
+              <option value="yes">Yes</option>
+            </select>
+          </div>
+        </div>
+      )}
 
       {/* Actions */}
       <div className="flex justify-end gap-2">
@@ -231,6 +281,7 @@ const ProductCard = ({
   isDragging, dragHandleProps,
   isQuickEditing, onQuickEdit, onFullEdit, onDelete, onStatusToggle,
   onQuickSave, onQuickCancel,
+  menuType, clients, onStockToggleDone, // CR-140
 }) => {
   const [deleteConfirm, setDeleteConfirm] = useState(false);
   const [selectedReason, setSelectedReason] = useState("");
@@ -244,6 +295,8 @@ const ProductCard = ({
         currencySymbol={currencySymbol}
         onSave={onQuickSave}
         onCancel={onQuickCancel}
+        menuType={menuType}
+        clients={clients}
       />
     );
   }
@@ -288,9 +341,23 @@ const ProductCard = ({
           </div>
 
           <div className="flex flex-wrap gap-1">
-            <ChannelChip label="Dine-In" active={product.availability?.dineIn} />
-            <ChannelChip label="Delivery" active={product.availability?.delivery} />
-            <ChannelChip label="Takeaway" active={product.availability?.takeaway} />
+            {menuType === 'Aggregator' ? ( // CR-140
+              <>
+                <ChannelChip label="Swiggy" active={product.swiggy} />
+                <ChannelChip label="Zomato" active={product.zomato} />
+                {!product.isActive && ( // G4: status-dependent (was food_stock===0); instant after toggle
+                  <span className="text-xs px-1.5 py-0.5 rounded" style={{ backgroundColor: 'rgba(245,158,11,.08)', color: '#d97706', border: '1px solid rgba(245,158,11,.2)' }}>
+                    Offline{product.turnOnAt ? ` · Back at ${(d => d.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true }))(new Date(product.turnOnAt.includes('T') ? product.turnOnAt : product.turnOnAt.replace(' ','T') + '+05:30'))}` : ''}
+                  </span>
+                )}
+              </>
+            ) : (
+              <>
+                <ChannelChip label="Dine-In" active={product.availability?.dineIn} />
+                <ChannelChip label="Delivery" active={product.availability?.delivery} />
+                <ChannelChip label="Takeaway" active={product.availability?.takeaway} />
+              </>
+            )}
             {product.isInventory && <span className="text-xs px-1.5 py-0.5 rounded" style={{ backgroundColor: "rgba(59,130,246,0.08)", color: "#3B82F6", border: "1px solid rgba(59,130,246,0.2)" }}>Inventory</span>}
             {product.packedFood && <span className="text-xs px-1.5 py-0.5 rounded" style={{ backgroundColor: "rgba(59,130,246,0.08)", color: "#3B82F6", border: "1px solid rgba(59,130,246,0.2)" }}>Packaged</span>}
             {product.isOutOfStock && <span className="text-xs px-1.5 py-0.5 rounded" style={{ backgroundColor: "rgba(239,68,68,0.08)", color: "#EF4444", border: "1px solid rgba(239,68,68,0.2)" }}>Out of Stock</span>}
@@ -301,6 +368,9 @@ const ProductCard = ({
 
         {/* Right side: Station + Price + Actions */}
         <div className="flex items-center gap-3 flex-shrink-0">
+          {menuType === 'Aggregator' && ( // CR-140 GAP-5
+            <AggregatorStockToggle product={product} onToggleDone={onStockToggleDone} />
+          )}
           <span className="text-sm font-bold min-w-[60px] text-right" style={{ color: product.isActive ? COLORS.darkText : "#94A3B8" }}>
             {currencySymbol}{product.basePrice}
           </span>

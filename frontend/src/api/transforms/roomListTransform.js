@@ -45,6 +45,7 @@ export const transformRoomListToRows = (raw) => {
       roomNumber: t.table_no || null,
       tableId: t.id || null,
       guestName,
+      phone: u.phone ?? null,       // BUG-378: phone from user.phone (confirmed in GET_ROOM_LIST response)
       checkInDateTime: null, // detail fetch fills via roomInfo.checkInDate
       transferCount: null,
       food: null,

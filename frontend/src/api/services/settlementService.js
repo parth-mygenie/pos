@@ -33,3 +33,7 @@ export const settleWaiter = (date, waiterId, amount, settlementType, pilferage) 
 /** Self-settlement for logged-in user */
 export const selfSettle = (date) =>
   api.post(`${BASE}/self-settlement`, { date });
+
+/** CR-095: Transfer collection between waiters */
+export const transferCollection = (payload) =>
+  api.post(`${BASE}/transfer-collection`, payload);

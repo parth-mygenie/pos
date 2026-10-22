@@ -45,6 +45,8 @@ Use this router before reading the detailed role table. Pick exactly one role.
 | Regression is clean and release readiness must be checked | **PRE-RELEASE AUDIT** |
 | Audit is clean and sprint artifacts/status must be closed | **CLOSURE** |
 | Owner approved freeze and production release is needed | **RELEASE** |
+| Owner wants to push registry.json to the CTO Google Sheet | **SHEET PUSH** |
+| Owner wants to see what CTO changed in the Google Sheet | **SHEET DRIFT** |
 
 If the owner request maps to more than one role, choose the earliest role in the gate sequence and state why.
 
@@ -247,6 +249,8 @@ If a legacy artifact already exists at a v0.6 path, update that file instead of 
 | **10** | **PRE-RELEASE AUDIT** | Regression clean | Performance, security, accessibility, code quality, registry integrity audit. |
 | **11** | **CLOSURE** | Audit clean | Verify artifacts, update registries, reconciliation if drift found. |
 | **12** | **RELEASE** | Owner approves freeze | Tag branch, clean repo, deploy to production, post-deploy smoke. |
+| **13** | **SHEET PUSH** | Owner wants to push registry to Sheet | Run --push. Report result. No code files touched. |
+| **14** | **SHEET DRIFT** | Owner wants to see CTO Sheet changes | Run --pull --dry-run. Show diff only. No registry writes. |
 
 **After picking your role, jump to the matching section below. Follow ONLY that boot sequence.**
 
@@ -1214,6 +1218,24 @@ READ:
 - **No unused imports:** `yarn build` should produce 0 warnings about unused imports from sprint changes.
 - **ESLint clean:** Only pre-existing warnings. No NEW lint warnings from sprint changes.
 
+#### D1. DEPENDENCY CONSTRAINTS CHECK (MANDATORY — runs alongside D)
+
+Read `/app/memory/control/DEPENDENCY_CONSTRAINTS.md` and for each FROZEN package, verify the installed version has not drifted:
+
+```bash
+# Recharts — must be 2.x, never 3.x
+node -e "const v=require('./node_modules/recharts/package.json').version; console.log('recharts:', v); if(v.startsWith('3.')) process.exit(1);"
+```
+
+If any FROZEN package is at a non-allowed version → **RELEASE BLOCKER**. Raise as a P1 defect before releasing.
+
+Additionally, run a production build to catch any Terser/minification regressions introduced this sprint:
+```bash
+npm run build   # must exit 0 with zero TypeError in output
+```
+
+**Why this matters:** The dev server never exposes Terser crashes. A package version that looks fine in dev can crash every chart page in production (BUG-465, 2026-09-26). The pre-release audit is the last safety net before prod.
+
 #### E. RELEASE HYGIENE — NO TEST/DOC ARTIFACTS IN BUILD
 - **Test files excluded from build:** `find build/ -name "*.test.*" -o -name "*.spec.*"` → empty
 - **Memory/doc files not in build:** `find build/ -name "*.md"` → empty (except __dev/)
@@ -1418,6 +1440,56 @@ READ:
 
 ---
 
+## ROLE 13: SHEET PUSH AGENT <!-- CR-416 -->
+
+**When to call:** Owner says "push to sheet" / "sync registry to sheet" / "update the sheet" / "sheet push"
+
+### Boot
+None — no file reading required.
+
+### Do
+1. Run: `cd /app && python3 memory/reports/sheets_sync.py --push`
+2. Check exit code AND scan stdout for any `⚠ Write failed` line.
+
+### Hard Gate — NO CODE FILE TOUCHES (MANDATORY)
+This role MUST NOT modify any file under `frontend/src/` or `backend/`, any `*.jsx/.js/.py` application file, any `.env` file, or any `*.json` file. Violation is a CRITICAL protocol error.
+
+### Output
+**Success:** `"SHEET PUSH COMPLETE — <N> items, 9 tabs updated."`
+**Exit non-zero:** `"SHEET PUSH FAILED: <error text>. Sheet is out of sync. Owner action needed."`
+**`⚠ Write failed` in stdout:** `"SHEET PUSH PARTIAL: tab '<name>' write failed. Verify Sheet tab."`
+**Missing `.env`:** `"SHEET PUSH UNAVAILABLE — memory/reports/.env not present. Restore credentials per SESSION_HANDOVER_2026_10_05_CR406_SHEETS_SYNC_IMPL.md §3."`
+Agent MUST flag any failure. Agent MUST NOT silently skip or proceed as if push succeeded.
+
+### Skip
+Everything else — no planning, no investigation, no code review.
+
+---
+
+## ROLE 14: SHEET DRIFT AGENT <!-- CR-416 -->
+
+**When to call:** Owner says "show drift" / "check the sheet" / "what did CTO change" / "sheet drift"
+
+### Boot
+None — no file reading required.
+
+### Do
+1. Run: `cd /app && python3 memory/reports/sheets_sync.py --pull --dry-run`
+2. Print the output as-is. STOP.
+
+### Hard Gate — NO CODE FILE TOUCHES AND NO REGISTRY WRITES (MANDATORY)
+This role MUST NOT modify any file under `frontend/src/` or `backend/`, any `*.jsx/.js/.py` app file, any `.env` file, or write to `registry.json` under any circumstance. The diff is read-only output only. Violation is a CRITICAL protocol error.
+
+### Output
+Read-only diff printed as-is. Owner decides what to do next.
+If no changes: `"No drift detected — registry.json matches the Sheet."`
+If credentials missing: `"SHEET DRIFT UNAVAILABLE — memory/reports/.env not present."`
+
+### Skip
+Everything else — no planning, no code, no registry writes of any kind.
+
+---
+
 ## DISTRIBUTED ARTIFACT OWNERSHIP (v0.7)
 
 | # | Artifact | Owner Role | Gate | Enforcement |
@@ -1573,6 +1645,56 @@ When root cause is backend/API, write a BACKEND_BRIEF using the v0.7 template wi
 Every role must end with the v0.7 compact final format so the owner and next agent can see status, outputs, blockers, and next step quickly.
 **Applies to:** ALL roles.
 
+### R25: Laravel uses PUT for all update endpoints — never POST for updates
+This backend is Laravel and follows strict REST verb conventions:
+- `POST` → **create** only (new records)
+- `PUT` / `PATCH` → **update** existing records
+- `DELETE` → delete
+
+Using `api.post()` on an update endpoint returns **405 Method Not Allowed** (often silently in the UI — the request "returns" but nothing persists). This has caused repeated post-delivery bugs (CR-072 recipes fixed in BUG-197; CR-069 employees still broken as BUG-198).
+
+**Enforcement:**
+- PLANNING: every service function that mutates an existing record must specify `PUT` (or `PATCH` if backend confirms) in the plan. Update-endpoint verb is a mandatory line in the Verification Matrix.
+- IMPLEMENTATION / BUG FIX: `api.post(...)` is allowed only for creation. Grep-guard: any `api.post` in a function named `update*`, `edit*`, `save*` (with an `id` arg), or `resetPassword*` is a defect.
+- Curl-probe rule (R11) must confirm method + response shape before wiring any update call.
+- If a `POST` update genuinely exists on the backend, document it as an exception in `KNOWN BACKEND QUIRKS` with the endpoint name — do not assume.
+
+**Applies to:** PLANNING, IMPLEMENTATION, BUG FIX, INVESTIGATION, QA (API testing).
+
+---
+
+### R26: Frozen dependency constraints — read before touching package.json
+
+`control/DEPENDENCY_CONSTRAINTS.md` lists every dependency that is version-locked for a production-safety reason. **Before changing any version in `package.json`:**
+
+1. `cat /app/memory/control/DEPENDENCY_CONSTRAINTS.md` — check if the package is listed.
+2. If listed as FROZEN → **DO NOT upgrade without explicit owner approval + production build test.**
+3. Any `package.json` change that touches a listed dependency is HIGH risk regardless of how small it looks.
+
+**Current frozen packages (summary — full details in `DEPENDENCY_CONSTRAINTS.md`):**
+
+| Package | Locked at | Why frozen |
+|---|---|---|
+| `recharts` | `2.15.4` (2.x) | recharts 3.x uses es-toolkit CJS compat shim that Terser mangles → `TypeError: mR is not a function` crashes ALL chart pages in production. **Never upgrade to 3.x without a full production build (`npm run build`) + all 30 chart pages verified in the minified bundle.** (BUG-465, 2026-09-26) |
+
+**Production build is MANDATORY after any `package.json` change:**
+```bash
+npm run build   # must exit 0, zero TypeError in output
+```
+The dev server (`yarn start` / `npm start`) runs unminified and will NEVER catch Terser minification crashes. Only `npm run build` proves the production bundle is safe.
+
+**Applies to:** ALL roles that touch `package.json` (IMPLEMENTATION, BUG FIX, DEPLOYMENT, PRE-RELEASE AUDIT).
+
+---
+
+### R27: SHEET PUSH and SHEET DRIFT carry a hard code-file gate <!-- CR-416 -->
+SHEET PUSH MUST NOT modify any file under `frontend/src/`, `backend/`, any `*.jsx/.js/.py` application file, any `.env`, or any `*.json`.
+SHEET DRIFT additionally MUST NOT write to `registry.json` or any other file under any circumstance — its only output is printing the diff to the console.
+Both roles are owner-triggered only. No other role calls or depends on them.
+Violation of either gate is a CRITICAL protocol error.
+
+**Applies to:** SHEET PUSH (Role 13), SHEET DRIFT (Role 14).
+
 ---
 
 ## ENVIRONMENT
@@ -1652,6 +1774,7 @@ When a report needs account context, write alias + RID only. Never write passwor
 | `payment_status` is `null` from list endpoint even after settlement | Use `fOrderStatus` for rooms |
 | `'sucess'` misspelling for PayLater status | Do not fix — backend expects this |
 | Laravel returns `Supported methods: ...` on 405 | Method-probe first |
+| **Laravel uses `PUT` for ALL updates (see R25)** | **`api.post()` on update endpoints → silent 405. Always `api.put()` for update.** |
 | `scan-new-order` socket has 2 payload formats (4-element old, 6-element new) | Must be backward compatible |
 | Profile API can 500 → empty permissions → icons disappear | Permission-gated UI becomes invisible |
 | `delivery_assign` feature flag in restaurant profile | Never branch on `order_in` or `source` |
@@ -1705,6 +1828,7 @@ Rate yourself 1-5. **Items 1-2 are MANDATORY** (must appear in SESSION_HANDOVER 
 - Do not print raw passwords, tokens, API keys, or customer-sensitive payloads
 - Do not use Fast Lane unless all eligibility rules pass and owner explicitly approves
 - Do not downgrade risk without owner rationale
+- **Do not use `api.post()` for update operations — Laravel backend requires `PUT` (R25)**
 - QA agent: NEVER fix code. Report it, don't fix it.
 - PLANNING agent: NEVER write code. Plan it, don't build it.
 - INVESTIGATION agent: NEVER write code. Diagnose it, don't fix it.
@@ -1737,6 +1861,7 @@ If you encounter:
 | **v0.5** | **2026-06-14** | **Hardened playbooks based on POS 4.0 retrospective (7 lost CRs). PLANNING: +Code Reality Check, +Conflict Pre-Check, +Verification Matrix, +Post-Code Registry Checklist. IMPLEMENTATION: +Entry Verification, +Checkpointing, +Self-Verification, +5-item EXIT GATE (hard blocker). QA: +Precondition Check (rejects unsynced handovers), +Registry Spot-Check. PRE-RELEASE AUDIT: +§F Registry Integrity Audit (code-to-registry cross-check, RELEASE BLOCKER). CLOSURE: +Phase B Reconciliation (formal process for code-exists-but-unregistered). RELEASE: +Baseline Precondition Check. New rules R17 (Registry Sync Gate) + R18 (Code Markers Mandatory). Artifact #0 merged into handover header (4-line mandatory format). Dashboard Data Contract added. Smoke batch: single-doc append-only rule. Regression: +meta-regression item count check.** |
 | **v0.6** | **2026-06-15** | **CR-047: Role Hardening for 4 weakest roles. STEP -1: rewritten as owner-driven session start — agent asks "What would you like to do?" FIRST, queue is opt-in (not forced). +handover reading, +stale batch 48h detection, +multi-batch ordering. NEW STEP -1.5: conditional environment check (execution roles only, doc roles skip). PLANNING: +stage dispatch (Gate 2 only / Gate 3 only / ask). INTAKE: +severity rubric (P0-P3 with triggers+SLA), +duplicate detection protocol (3-step DUPLICATE/RELATED/DISTINCT), +evidence storage (/app/memory/evidence/), +source/confidence tag, +blast radius estimate. QA: +4-tier finding severity (BLOCKER/MAJOR/MINOR/NOTE independent of P0-P3), +conditional env check, +evidence format standard, +regression scope calibration (3-tier), +coverage sufficiency check, +re-test protocol, +8-step sequence. BUG FIX (full rewrite): +reproduce-before-fixing (mandatory Step 0), +root cause analysis (5 classifications: PLAN_GAP/CODE_ERROR/DATA_EDGE/ENVIRONMENT/INTERACTION, MINOR exception), +fix report artifact, +5 escalation paths (→QA, →owner, →BACKEND_BRIEF, →INVESTIGATION, →OPEN_GAPS), +scope expansion micro-protocol. INVESTIGATION: +10-step time-box, +hypothesis-driven method, +6-section structured report template, +data persistence rule (/tmp/ banned), +exit criteria with Planning skip path (owner-approved), +Bug Fix escalation intake format.** |
 | **v0.7** | **2026-06-17** | **Non-breaking operating layer. Header version aligned to v0.7. Added session scope control, secret hygiene, role decision tree, mandatory risk classification, owner-approved Fast Lane for safe tiny changes, owner approval matrix, standard final response formats, backend handoff template, artifact naming standard, secure credential aliases replacing raw passwords, and shared rules R19-R24. Existing v0.6 gate flow, roles, registry sync, code markers, QA, audit, closure, and release controls remain intact.** |
+| **v0.8** | **2026-07-16** | **+R25: Laravel PUT-for-updates rule (systemic pattern uncovered by BUG-197/BUG-198). `api.post()` on update endpoints returns silent 405. New shared rule enforced across PLANNING/IMPLEMENTATION/BUG FIX/INVESTIGATION/QA; grep-guard on `update*`, `edit*`, `save*(id,...)`, `resetPassword*` functions; verb line added to Verification Matrix; cross-reference row added to KNOWN BACKEND QUIRKS; WHAT NOT TO DO bullet added.** |
 
 ---
 

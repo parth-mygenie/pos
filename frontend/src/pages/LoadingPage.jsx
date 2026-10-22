@@ -3,16 +3,20 @@ import { useNavigate, useLocation } from "react-router-dom";
 import { Check, Loader2, AlertCircle } from "lucide-react";
 import { COLORS, GENIE_LOGO_URL } from "../constants";
 import { useToast } from "../hooks/use-toast";
-import { API_LOADING_ORDER, LOADING_STATES } from "../api/constants";
+import { API_LOADING_ORDER, LOADING_STATES, PAGINATION } from "../api/constants"; // BUG-451
 import { useAuth, useRestaurant, useMenu, useTables, useSettings, useOrders, useStations } from "../contexts";
 import * as profileService from "../api/services/profileService";
 import { setCrmRestaurantId } from "../api/crmAxios";
 import * as categoryService from "../api/services/categoryService";
 import * as productService from "../api/services/productService";
+import { getPopularFoods } from '../api/services/menuManagementService'; // BUG-340
+import { fromAPI as productFromAPI } from '../api/transforms/productTransform'; // BUG-340
 import * as tableService from "../api/services/tableService";
 import * as settingsService from "../api/services/settingsService";
 import * as orderService from "../api/services/orderService";
 import * as stationService from "../api/services/stationService";
+import { getAggregatorOrderList } from "../api/services/aggregatorService"; // BUG-599
+import { fromAPI as aggregatorFromAPI } from "../api/transforms/aggregatorTransform"; // BUG-599
 
 // Initial status shape per API key
 const mkIdle = () => ({ status: LOADING_STATES.IDLE, error: null, loaded: 0, total: 0, elapsed: null, startedAt: null });
@@ -26,7 +30,7 @@ const LoadingPage = () => {
   // Context setters
   const { setUserData } = useAuth();
   const { setRestaurant } = useRestaurant();
-  const { setCategories, setProducts } = useMenu();
+  const { setCategories, setProducts, setPopularProducts } = useMenu(); // BUG-340: +setPopularProducts
   const { setTables } = useTables();
   const { setCancellationReasons } = useSettings();
   const { setOrders } = useOrders();
@@ -256,8 +260,14 @@ const LoadingPage = () => {
 
     // Fire fetches in parallel; use allSettled so partial failures don't
     // short-circuit successful ones.
+    // BUG-FIX: wrap each station fetch with a 10s timeout to prevent indefinite hang
+    const withTimeout = (promise, ms) =>
+      Promise.race([
+        promise,
+        new Promise((_, reject) => setTimeout(() => reject(new Error('Station fetch timed out')), ms)),
+      ]);
     const stationPromises = stationsToLoad.map((station) =>
-      stationService.fetchStationData(station, categoriesMap)
+      withTimeout(stationService.fetchStationData(station, categoriesMap), 10000)
     );
 
     let settled;
@@ -411,7 +421,7 @@ const LoadingPage = () => {
     const t0 = Date.now();
     updateStatus('products', LOADING_STATES.LOADING, null, 0, 0, { startedAt: t0 });
     try {
-      const productsResponse = await productService.getProducts({ limit: 500, offset: 1, type: 'all' });
+      const productsResponse = await productService.getProducts({ limit: PAGINATION.DEFAULT_LIMIT, offset: 1, type: 'all' }); // BUG-451
       if (ctrl.aborted) return;
       data.products = productsResponse.products;
       const loadedCount = data.products?.length || 0;
@@ -426,6 +436,57 @@ const LoadingPage = () => {
       if (ctrl.aborted) return;
       updateStatus('products', LOADING_STATES.ERROR, error.readableMessage || error.message, 0, 0, { elapsed: ((Date.now() - t0) / 1000).toFixed(1), startedAt: null });
       toast({ title: "Failed to load products", description: error.readableMessage, variant: "destructive" });
+    }
+  };
+
+  // BUG-340: Popular food loader — gated by showPopularCategory.
+  // Runs in Tier 2 parallel batch. Early-exits with SUCCESS when toggle off (zero cost).
+  // Errors BLOCK BOOT (OQ-3) via phase1HasError. Refreshes on retry (OQ-2).
+  const loadPopularFood = async (ctrl, data) => {
+    const t0 = Date.now();
+    const showPopular = data.profile?.restaurant?.settings?.showPopularCategory;
+
+    // Gate: toggle off → instant SUCCESS, no API call
+    if (!showPopular) {
+      updateStatus('popularFood', LOADING_STATES.SUCCESS, null, 0, 0, { elapsed: '0.0', startedAt: null });
+      data.popularProducts = [];
+      return;
+    }
+
+    updateStatus('popularFood', LOADING_STATES.LOADING, null, 0, 0, { startedAt: t0 });
+    try {
+      const res = await getPopularFoods('all');
+      if (ctrl.aborted) return;
+      // Transform through productTransform.fromAPI.product — same path as all menu products.
+      // Fixes field name mismatch: api.id→productId, api.name→productName, api.price→basePrice
+      const raw = res.data?.products || [];
+      data.popularProducts = raw.map(p => productFromAPI.product(p));
+      const count = data.popularProducts.length;
+      updateStatus('popularFood', LOADING_STATES.SUCCESS, null, count, count, { elapsed: ((Date.now() - t0) / 1000).toFixed(1), startedAt: null });
+    } catch (error) {
+      if (ctrl.aborted) return;
+      updateStatus('popularFood', LOADING_STATES.ERROR, error.readableMessage || error.message, 0, 0, { elapsed: ((Date.now() - t0) / 1000).toFixed(1), startedAt: null });
+      toast({ title: "Failed to load popular items", description: error.readableMessage, variant: "destructive" });
+    }
+  };
+
+  // BUG-599: Aggregator order loader — same pattern as all other boot steps.
+  // Fetches UrbanPiper (Swiggy/Zomato) orders. No dependency on profile data
+  // beyond the auth token (already in localStorage). Runs in Tier 2 parallel.
+  const loadAggregatorOrders = async (ctrl, data) => {
+    const t0 = Date.now();
+    updateStatus('aggregatorOrders', LOADING_STATES.LOADING, null, 0, 0, { startedAt: t0 });
+    try {
+      const apiResponse = await getAggregatorOrderList();
+      if (ctrl.aborted) return;
+      data.aggregatorOrders = aggregatorFromAPI.aggregatorOrderList(apiResponse);
+      const count = data.aggregatorOrders?.length || 0;
+      updateStatus('aggregatorOrders', LOADING_STATES.SUCCESS, null, count, count, { elapsed: ((Date.now() - t0) / 1000).toFixed(1), startedAt: null });
+    } catch (error) {
+      if (ctrl.aborted) return;
+      data.aggregatorOrders = []; // BUG-599: empty on failure so post-batch combine still works
+      updateStatus('aggregatorOrders', LOADING_STATES.ERROR, error.readableMessage || error.message, 0, 0, { elapsed: ((Date.now() - t0) / 1000).toFixed(1), startedAt: null });
+      toast({ title: "Failed to load aggregator orders", description: error.readableMessage || error.message, variant: "destructive" });
     }
   };
 
@@ -474,7 +535,7 @@ const LoadingPage = () => {
       data.runningOrders = await orderService.getRunningOrders(roleParam);
       if (ctrl.aborted) return;
       const count = data.runningOrders?.length || 0;
-      setOrders(data.runningOrders);
+      // BUG-599: setOrders moved to post-batch — combines POS + aggregator orders
       updateStatus('runningOrders', LOADING_STATES.SUCCESS, null, count, count, { elapsed: ((Date.now() - t0) / 1000).toFixed(1), startedAt: null });
     } catch (error) {
       if (ctrl.aborted) return;
@@ -491,6 +552,8 @@ const LoadingPage = () => {
     tables: loadTables,
     cancellationReasons: loadCancellationReasons,
     runningOrders: loadRunningOrders,
+    popularFood: loadPopularFood, // BUG-340
+    aggregatorOrders: loadAggregatorOrders, // BUG-599
   };
 
   // CR pos_boot_api_parallelization — Option A1 (May-2026)
@@ -552,6 +615,15 @@ const LoadingPage = () => {
     // Dispatch Menu context (safe to re-call even on retry)
     if (data.categories) setCategories(data.categories);
     if (data.products) setProducts(data.products);
+    if (data.popularProducts) setPopularProducts(data.popularProducts); // BUG-340
+
+    // BUG-599: Combine POS + aggregator orders before dispatching to context.
+    // Both load in Tier 2 parallel; merging here avoids the race where
+    // setOrders(POS) would wipe aggregator orders added via addOrder.
+    if (data.runningOrders) {
+      const combined = [...data.runningOrders, ...(data.aggregatorOrders || [])];
+      setOrders(combined);
+    }
 
     loadedDataRef.current = data;
   };

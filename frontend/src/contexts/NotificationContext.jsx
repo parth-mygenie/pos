@@ -52,6 +52,11 @@ export const NotificationProvider = ({ children }) => {
   const { isAuthenticated } = useAuth();
   const [notifications, setNotifications] = useState([]);
   const [soundEnabled, setSoundEnabled] = useState(true);
+  // CR-440: FCM notification banner kill switch — per-device localStorage, default ON
+  const [notificationsEnabled, setNotificationsEnabled] = useState(() => {
+    try { return localStorage.getItem('mygenie_notifications_enabled') !== 'false'; }
+    catch { return true; }
+  });
   const initializedRef = useRef(false);
   const foregroundUnsubRef = useRef(null);
   const processNotificationRef = useRef(null);
@@ -61,6 +66,7 @@ export const NotificationProvider = ({ children }) => {
   // within a short window only plays sound once.
   const lastNotifKeyRef = useRef(null);
   const lastNotifTimeRef = useRef(0);
+  const [swUpdatePending, setSwUpdatePending] = useState(false); // BUG-597: true when a new SW version is waiting to activate
   // 2-second window: same key arriving within 2 s is treated as duplicate
   const DEDUP_WINDOW_MS = 2000;
 
@@ -128,6 +134,14 @@ export const NotificationProvider = ({ children }) => {
     console.log('[Notification] Extracted - title:', title, '| body:', body);
     console.log('[Notification] Sound - from payload:', soundKey, '| resolved:', resolvedSound);
 
+    // BUG-453 Fix B (OD-453-04): muted order → no sound, no banner/list entry.
+    // Placed AFTER BUG-034 dedup so dedup refs still update. Real FCM key is data.orderid (B0 evidence 2026-02).
+    const notifOrderId = String(data.orderid || data.order_id || data.orderId || '');
+    if (notifOrderId && soundManager.isOrderMuted(notifOrderId)) {
+      console.log('[Notification] BUG-453 muted order', notifOrderId, '— sound + toast suppressed');
+      return;
+    }
+
     // Play sound (SoundManager handles silent, unknown keys, etc.)
     if (resolvedSound) {
       console.log('[Notification] Playing sound:', resolvedSound);
@@ -136,6 +150,9 @@ export const NotificationProvider = ({ children }) => {
 
     // Silent notification: stop sound, don't show anything
     if (resolvedSound === 'silent') return;
+
+    // CR-440: banner kill switch — sound already played above; skip banner entry when disabled on this device
+    if (!notificationsEnabled) return;
 
     const notification = {
       id: Date.now().toString(),
@@ -151,7 +168,7 @@ export const NotificationProvider = ({ children }) => {
     };
 
     setNotifications((prev) => [notification, ...prev].slice(0, 50));
-  }, [DEDUP_WINDOW_MS]);
+  }, [DEDUP_WINDOW_MS, notificationsEnabled]); // CR-440: notificationsEnabled read inside callback
 
   // Keep ref in sync
   processNotificationRef.current = processNotification;
@@ -182,6 +199,20 @@ export const NotificationProvider = ({ children }) => {
     };
     navigator.serviceWorker?.addEventListener('message', handleSWMessage);
 
+    // BUG-597: detect a new SW version waiting on load, and watch for one arriving
+    if (navigator.serviceWorker) {
+      navigator.serviceWorker.ready.then((reg) => {
+        if (reg.waiting) setSwUpdatePending(true);
+        reg.addEventListener('updatefound', () => {
+          if (reg.waiting) setSwUpdatePending(true);
+        });
+      });
+      // BUG-597: when the new SW takes over, reload to get the fresh build
+      navigator.serviceWorker.addEventListener('controllerchange', () => {
+        window.location.reload();
+      });
+    }
+
     return () => {
       if (foregroundUnsubRef.current) foregroundUnsubRef.current();
       navigator.serviceWorker?.removeEventListener('message', handleSWMessage);
@@ -193,7 +224,7 @@ export const NotificationProvider = ({ children }) => {
   useEffect(() => {
     if (!isAuthenticated && initializedRef.current) {
       initializedRef.current = false;
-      soundManager.stop();
+      soundManager.stop(); soundManager.clearMutes(); // BUG-453: fresh mute state on next login
       setNotifications([]);
     }
   }, [isAuthenticated]);
@@ -202,6 +233,12 @@ export const NotificationProvider = ({ children }) => {
   useEffect(() => {
     soundManager.setEnabled(soundEnabled);
   }, [soundEnabled]);
+
+  // CR-440: sync notification banner preference to localStorage immediately on toggle
+  useEffect(() => {
+    try { localStorage.setItem('mygenie_notifications_enabled', String(notificationsEnabled)); }
+    catch { /* localStorage unavailable */ }
+  }, [notificationsEnabled]);
 
   // =========================================================================
   // PUBLIC METHODS
@@ -230,19 +267,25 @@ export const NotificationProvider = ({ children }) => {
     unreadCount,
     soundEnabled,
     setSoundEnabled,
+    notificationsEnabled,       // CR-440
+    setNotificationsEnabled,    // CR-440
     dismissNotification,
     clearAll,
     markRead,
     simulateNotification: processNotification,
+    swUpdatePending,            // BUG-597
   }), [
     notifications,
     unreadCount,
     soundEnabled,
     setSoundEnabled,
+    notificationsEnabled,
+    setNotificationsEnabled,
     dismissNotification,
     clearAll,
     markRead,
     processNotification,
+    swUpdatePending,            // BUG-597
   ]);
 
   return (

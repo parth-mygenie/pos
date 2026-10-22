@@ -83,7 +83,10 @@ const SettlementReportMockup = () => {
   const { restaurant } = useRestaurant();
 
   // App shell
-  const [isSidebarExpanded, setIsSidebarExpanded] = useState(false);
+  // BUG-361: persist sidebar state across reloads
+  const [isSidebarExpanded, setIsSidebarExpanded] = useState(
+    () => localStorage.getItem('mygenie_sidebar_expanded') === 'true'
+  );
   const [isSilentMode, setIsSilentMode] = useState(false);
 
   // ── Date range — default last 7 days ──────────────────────────────────────
@@ -148,7 +151,7 @@ const SettlementReportMockup = () => {
     if (p === 'Today') { /* f = t = today */ }
     else if (p === 'Yesterday') { f = new Date(now.getTime() - 86400000); t = new Date(now.getTime() - 86400000); }
     else if (p === '7D') f = new Date(now.getTime() - 6 * 86400000);
-    else if (p === '30D') f = new Date(now.getTime() - 29 * 86400000);
+    else if (p === 'LM') { f = new Date(now.getFullYear(), now.getMonth() - 1, 1); t = new Date(now.getFullYear(), now.getMonth(), 0); } // CR-422
     else if (p === '90D') f = new Date(now.getTime() - 89 * 86400000);
     else if (p === '365D') f = new Date(now.getTime() - 364 * 86400000);
     else if (p === 'MTD') f = new Date(now.getFullYear(), now.getMonth(), 1);
@@ -221,7 +224,7 @@ const SettlementReportMockup = () => {
     return fmtCur(v);
   };
 
-  const waiterExpected = (w) => w.totalFunds - w.settled - Math.abs(w.pilferage);
+  const waiterExpected = (w) => w.balanceToSettle; // BUG-185: use backend balance_to_settle directly
 
   // ── Sort icon ─────────────────────────────────────────────────────────────
   const SortIcon = ({ col }) => {
@@ -329,7 +332,7 @@ const SettlementReportMockup = () => {
     <div className="flex h-screen bg-white font-sans" data-testid="settlement-report-page">
       <Sidebar
         isExpanded={isSidebarExpanded}
-        setIsExpanded={setIsSidebarExpanded}
+        setIsExpanded={(v) => { setIsSidebarExpanded(v); localStorage.setItem('mygenie_sidebar_expanded', String(v)); }}
         isSilentMode={isSilentMode}
         setIsSilentMode={setIsSilentMode}
         onOpenSettings={() => {}}
@@ -343,7 +346,7 @@ const SettlementReportMockup = () => {
       <div className="flex-1 flex overflow-hidden">
         <main className="flex-1 flex flex-col overflow-hidden bg-zinc-50">
           {/* ── Header ──────────────────────────────────────────────────── */}
-          <header className="flex items-center justify-between px-8 py-5 bg-white border-b border-zinc-200 shrink-0" data-testid="settlement-report-header">
+          <header className="flex items-center justify-between px-8 py-5 bg-white border-b border-zinc-200 shrink-0 flex-wrap gap-y-3" data-testid="settlement-report-header"> {/* BUG-555 */}
             <div className="flex items-center gap-4">
               <button className="p-2 hover:bg-zinc-100 rounded-lg transition-colors" data-testid="settlement-report-back-btn" onClick={() => navigate('/dashboard')}>
                 <ArrowLeft className="w-5 h-5 text-zinc-600" />
@@ -353,7 +356,7 @@ const SettlementReportMockup = () => {
               </h1>
             </div>
 
-            <div className="flex items-center gap-3">
+            <div className="flex items-center gap-3 flex-wrap">
               {/* From-To range */}
               <div className={`flex items-center gap-2 px-3 py-2 border ${draftDirty && draftValid && !draftRangeExceeded ? 'border-[#F26B33]' : draftRangeExceeded ? 'border-red-400' : 'border-zinc-200'} bg-white rounded-lg ${isLoading ? 'opacity-50' : ''}`} data-testid="settlement-report-daterange">
                 <CalendarIcon className="w-4 h-4 text-zinc-500" />
@@ -376,7 +379,7 @@ const SettlementReportMockup = () => {
 
               {/* Presets */}
               <div className={`flex items-center gap-1 px-1.5 py-1 bg-zinc-100 rounded-lg ${isLoading ? 'opacity-50' : ''}`} data-testid="settlement-report-presets">
-                {['Today', 'Yesterday', '7D', '30D', '90D', '365D', 'MTD', 'YTD'].map((p) => (
+                {['Today', 'Yesterday', '7D', 'LM', '90D', '365D', 'MTD', 'YTD'].map((p) => (
                   <button key={p} disabled={isLoading} className={`px-2.5 py-1 text-xs font-medium rounded-md transition-all ${activePreset === p ? 'bg-white text-zinc-900 shadow-sm' : 'text-zinc-600 hover:bg-white/50 hover:text-zinc-900'}`} data-testid={`settlement-report-preset-${p.toLowerCase()}`} onClick={() => handlePreset(p)}>
                     {p}
                   </button>

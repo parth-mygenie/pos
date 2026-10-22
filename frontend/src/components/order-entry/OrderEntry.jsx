@@ -1,9 +1,12 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
-import { ChevronDown, Search, UserPlus, StickyNote, Plus, Truck, ShoppingBag, UtensilsCrossed, Scissors, ArrowRightLeft, GitMerge, X } from "lucide-react";
+import { ChevronDown, Search, UserPlus, StickyNote, Plus, Truck, ShoppingBag, UtensilsCrossed, Scissors, ArrowRightLeft, GitMerge, X, RotateCw } from "lucide-react"; // BUG-555 A1
 import { COLORS } from "../../constants";
 import { useMenu, useOrders, useSettings, useRestaurant, useAuth, useTables } from "../../contexts";
 import { useToast } from "../../hooks/use-toast";
 import api from "../../api/axios";
+import { cancelAndRefund } from '../../api/services/razorpayRefundService'; // CR-165
+import { splitRoomOrder, switchOrderTable } from "../../api/services/roomService"; // CR-163
+// CR-163: storeTable/getTables/getTableByNumber removed — Option A uses walk-in (no table creation)
 import { lookupAddresses, addAddress, lookupCustomer } from "../../api/services/customerService";
 import { API_ENDPOINTS } from "../../api/constants";
 import { toAPI as tableToAPI } from "../../api/transforms/tableTransform";
@@ -27,9 +30,11 @@ import AddressPickerModal from "./AddressPickerModal";
 import AddressFormModal from "./AddressFormModal";
 import OrderPlacedModal from "./OrderPlacedModal";
 import TransferFoodModal from "./TransferFoodModal";
+import SplitRoomItemsModal from "./SplitRoomItemsModal"; // CR-163
 import MergeTableModal from "./MergeTableModal";
 import ShiftTableModal from "./ShiftTableModal";
 import CancelFoodModal from "./CancelFoodModal";
+import MarkCompModal from "./MarkCompModal"; // BUG-298 / BUG-299
 import CancelOrderModal from "./CancelOrderModal";
 import CollectPaymentPanel from "./CollectPaymentPanel";
 import { PrintBillButton } from "./RePrintButton";
@@ -37,6 +42,7 @@ import SplitBillModal from "../modals/SplitBillModal";
 // CR-010: Weight-based billing
 import WeightEntryModal from "./WeightEntryModal";
 import { getWeightPromptEnabled } from "../../utils/weightEntryPrefs";
+// BUG-340: getPopularFoods removed — popular items now loaded at boot via LoadingPage → MenuContext
 
 const ORDER_TYPES = [
   { id: "delivery", label: "Delivery", icon: Truck },
@@ -46,9 +52,12 @@ const ORDER_TYPES = [
 
 const DROPDOWN_TABLE_SORT = { available: 0, reserved: 1, occupied: 2, billReady: 3, paid: 4, yetToConfirm: 4 };
 
+// BUG-555 WP-A (OD-555-13=c) · BUG-567 (OD-567-01=a): (portrait AND <768) OR (landscape AND <800) → rotate overlay
+const ROTATE_MQ = '(orientation: portrait) and (max-width: 767px), (orientation: landscape) and (max-width: 799px)'; // BUG-567
+
 // Order Entry Screen Component - 3-Panel Layout
-const OrderEntry = ({ table, onClose, orderData, orderType = "delivery", onOrderTypeChange, allTables = [], onSelectTable, savedCart = [], onCartChange, initialShowPayment = false, initialTransferItem = null, onCollectBillStayOnOrder }) => {
-  const { categories, products } = useMenu();
+const OrderEntry = ({ table, onClose, orderData, orderType = "delivery", onOrderTypeChange, allTables = [], onSelectTable, savedCart = [], onCartChange, initialShowPayment = false, initialTransferItem = null, initialShowMerge = false, initialShowShift = false, onCollectBillStayOnOrder }) => {
+  const { categories, products, popularProducts, activeMenuProducts, activeMenuType, availableMenuTypes } = useMenu(); // BUG-340: +popularProducts from boot // CR-376: +activeMenuProducts, +activeMenuType // BUG-462: +availableMenuTypes
   const { orders, addOrder, refreshOrders, removeOrder, waitForOrderRemoval, waitForOrderEngaged, waitForOrderReady, getOrderByTableId, getOrderById } = useOrders();
   const { getItemCancellationReasons, getOrderCancellationReasons } = useSettings();
   const { restaurant, features, cancellation, settings, printerAgents } = useRestaurant();
@@ -88,10 +97,15 @@ const OrderEntry = ({ table, onClose, orderData, orderType = "delivery", onOrder
     isWeightItem: ['Kg','gm','L','ml'].includes(product.itemUnit),
     // CR-028: Discount eligibility flag
     giveDiscount: product.giveDiscount !== false,
+    itemCode: product.itemCode || '',                      // CR-098: short code for display + search
   });
 
-  const [activeCategory, setActiveCategory] = useState("all");
+  // CR-148 / BUG-340: Popular category gate — products read from MenuContext
+  const showPopularCategory = !!restaurant?.settings?.showPopularCategory;
+  const [activeCategory, setActiveCategory] = useState("all"); // CR-376-FU-B: B3 — "All" is always the default tab (was popular when setting ON)
   const [searchQuery, setSearchQuery] = useState("");
+  const [isRotateBlocked, setIsRotateBlocked] = useState(() => window.matchMedia(ROTATE_MQ).matches); // BUG-555 A3
+  useEffect(() => { const mq = window.matchMedia(ROTATE_MQ); const h = (e) => setIsRotateBlocked(e.matches); mq.addEventListener('change', h); return () => mq.removeEventListener('change', h); }, []); // BUG-555 A3
   const [cartItems, setCartItems] = useState([]);
   const [printAllKOT,  setPrintAllKOT]  = useState(() => !!restaurant?.settings?.autoKot);
   const [printAllBill, setPrintAllBill] = useState(() => !!restaurant?.settings?.autoBill);
@@ -121,6 +135,8 @@ const OrderEntry = ({ table, onClose, orderData, orderType = "delivery", onOrder
     setPrintAllBill(!!restaurant.settings.autoBill);
     settingsHydratedRef.current = true;
   }, [restaurant?.settings]);
+
+  // BUG-340: on-demand popular food fetch removed — items loaded at boot via LoadingPage/MenuContext
   const [customizationItem, setCustomizationItem] = useState(null);
   // BUG-035 (Apr-2026): dynamic-price item awaiting cashier price entry.
   // When a menu item has base price === 1 it is treated as a "dynamic-price" item.
@@ -134,9 +150,16 @@ const OrderEntry = ({ table, onClose, orderData, orderType = "delivery", onOrder
   const [orderNotes, setOrderNotes] = useState([]);
   const [showOrderPlaced, setShowOrderPlaced] = useState(false);
   const [transferItem, setTransferItem] = useState(initialTransferItem);
+  const [showSplitModal, setShowSplitModal] = useState(false); // CR-163
   const [showMergeModal, setShowMergeModal] = useState(false);
+
+  // BUG-372: auto-open merge modal when triggered from outside (DashboardPage)
+  useEffect(() => { if (initialShowMerge) setShowMergeModal(true); }, [initialShowMerge]);
+  // BUG-372: auto-open shift modal when triggered from outside (DashboardPage)
+  useEffect(() => { if (initialShowShift) setShowShiftModal(true); }, [initialShowShift]);
   const [showShiftModal, setShowShiftModal] = useState(false);
   const [cancelItem, setCancelItem] = useState(null);
+  const [compItem, setCompItem] = useState(null); // BUG-298 / BUG-299
   const [showCancelOrderModal, setShowCancelOrderModal] = useState(false);
   const [showSplitBillModal, setShowSplitBillModal] = useState(false);
   // BUG-004 (QA, Apr 2026): grand total captured at the moment Split Bill is
@@ -299,6 +322,12 @@ const OrderEntry = ({ table, onClose, orderData, orderType = "delivery", onOrder
     );
   }, [allTables, tableSearchQuery]);
 
+  // CR-163: Free dine-in tables for the destination picker (Path A)
+  const freeDineInTables = useMemo(
+    () => allTables.filter(t => !t.isRoom && !t.isWalkIn && t.status === 'available'),
+    [allTables]
+  );
+
   // ── Permission flags ──
   const canCancelOrder = hasPermission('order_cancel');
   const canCancelItem = hasPermission('food');
@@ -317,8 +346,12 @@ const OrderEntry = ({ table, onClose, orderData, orderType = "delivery", onOrder
 
   // Item-level cancel: permission only
   const isItemCancelAllowed = useCallback((item) => {
-    return canCancelItem;
-  }, [canCancelItem]);
+    if (!canCancelItem) return false;
+    // BUG-330: block cancel on post-serve items when allowPostServeCancel is OFF
+    // post-serve = status !== 'preparing' (confirmed orderTransform:953)
+    if (item.status !== 'preparing' && cancellation?.allowPostServeCancel === false) return false;
+    return true;
+  }, [canCancelItem, cancellation?.allowPostServeCancel]);
 
   // Dietary filter states
   const [primaryFilter, setPrimaryFilter] = useState(null); // "veg" | "egg" | "nonveg" | null
@@ -352,9 +385,9 @@ const OrderEntry = ({ table, onClose, orderData, orderType = "delivery", onOrder
     const newKey = table?.id || orderType;
     const oldKey = cartKeyRef.current;
 
-    // Save previous table's cart before switching
+    // CR-411: clear oldKey slot instead of saving (OD-411-01=A — prevents stale restore).
     if (oldKey && oldKey !== newKey) {
-      onCartChange?.(oldKey, cartItems);
+      onCartChange?.(oldKey, []);
     }
     cartKeyRef.current = newKey;
 
@@ -474,6 +507,9 @@ const OrderEntry = ({ table, onClose, orderData, orderType = "delivery", onOrder
       } else {
         setCartItems([]);
       }
+    } else if (oldKey !== null) {
+      // CR-411: cart carries forward — items stay in state (reverses BUG-452 OD-452-01=B).
+      // No remount on type/table switch; this branch IS reachable. No setCartItems call → items preserved.
     } else {
       setCartItems([]);
     }
@@ -487,7 +523,7 @@ const OrderEntry = ({ table, onClose, orderData, orderType = "delivery", onOrder
     if (!placedOrderId) return;
     
     const orderFromContext = orders.find(o => o.orderId === placedOrderId);
-    if (!orderFromContext || !orderFromContext.items?.length) return;
+    if (!orderFromContext) return; // CR-163 FIX: allow sync even when items become empty (full split)
 
     console.log('[OrderEntry] Syncing from OrderContext', {
       orderId: placedOrderId,
@@ -520,15 +556,21 @@ const OrderEntry = ({ table, onClose, orderData, orderType = "delivery", onOrder
   // Get current menu items based on category, search, and dietary filters
   const getFilteredItems = () => {
     let items;
-    if (activeCategory === "all") {
-      items = products.filter(p => p.isActive && !p.isDisabled).map(adaptProduct);
+    if (activeCategory === "popular") { // CR-148 / BUG-340: popular tab — transform matches other branches
+      // CR-376-FU-B: B4 — Popular scoped to active menu (same visible-set predicate as CategoryPanel count)
+      const visibleIds = new Set(activeMenuProducts.filter(p => p.isActive && !p.isDisabled).map(p => p.productId));
+      items = popularProducts.filter(p => visibleIds.has(p.productId)).map(adaptProduct);
+    } else if (activeCategory === "all") {
+      items = activeMenuProducts.filter(p => p.isActive && !p.isDisabled).map(adaptProduct); // CR-376
     } else {
-      items = products
+      items = activeMenuProducts // CR-376
         .filter(p => p.categoryId === activeCategory && p.isActive && !p.isDisabled)
         .map(adaptProduct);
     }
     if (searchQuery.trim()) {
-      items = items.filter(item => item.name.toLowerCase().includes(searchQuery.toLowerCase()));
+      // CR-098: search by name OR short code
+      const q = searchQuery.toLowerCase();
+      items = items.filter(item => item.name.toLowerCase().includes(q) || (item.itemCode && item.itemCode.toLowerCase().includes(q)));
     }
     // Apply primary dietary filter
     if (primaryFilter) {
@@ -577,6 +619,7 @@ const OrderEntry = ({ table, onClose, orderData, orderType = "delivery", onOrder
         status: 'preparing',
         placed: false,
         addedAt: new Date().toISOString(),
+        _cartKey: genCartKey(), // BUG-374
       }]);
       setFlashItemId(item.id);
       setTimeout(() => setFlashItemId(null), 400);
@@ -601,7 +644,8 @@ const OrderEntry = ({ table, onClose, orderData, orderType = "delivery", onOrder
         qty: item.quantity || 1,
         status: "preparing",
         placed: false,
-        addedAt: new Date().toISOString()
+        addedAt: new Date().toISOString(),
+        _cartKey: genCartKey(), // BUG-374
       }]);
     }
     setFlashItemId(item.id);
@@ -633,7 +677,8 @@ const OrderEntry = ({ table, onClose, orderData, orderType = "delivery", onOrder
           status: 'preparing',
           placed: false,
           _isDynamicPrice: true,
-          addedAt: new Date().toISOString()
+          addedAt: new Date().toISOString(),
+          _cartKey: genCartKey(), // BUG-374
         }]);
       }
     } else {
@@ -643,7 +688,8 @@ const OrderEntry = ({ table, onClose, orderData, orderType = "delivery", onOrder
         status: 'preparing',
         placed: false,
         _isDynamicPrice: true,
-        addedAt: new Date().toISOString()
+        addedAt: new Date().toISOString(),
+        _cartKey: genCartKey(), // BUG-374
       }]);
     }
     setFlashItemId(enrichedItem.id);
@@ -664,11 +710,24 @@ const OrderEntry = ({ table, onClose, orderData, orderType = "delivery", onOrder
       status: 'preparing',
       placed: false,
       addedAt: new Date().toISOString(),
+      _cartKey: genCartKey(), // BUG-374
     }]);
     setFlashItemId(item.id);
     setTimeout(() => setFlashItemId(null), 400);
     setWeightEntryItem(null);
   };
+
+  // BUG-246: Build identity key for customization merge
+  const customizationKey = (ci) => JSON.stringify([
+    ci.id || ci.foodId,
+    ci.customizations?.size || '',
+    [...(ci.customizations?.variants || [])].sort(),
+    [...(ci.customizations?.addons || [])].sort(),
+    ci.customizations?.notes || '',
+  ]);
+
+  // BUG-374: unique per-slot cart key — prevents same-food different-variation qty sync
+  const genCartKey = () => `ck-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
 
   const addCustomizedItemToCart = (item) => {
     // Case 3: Prepaid orders cannot be edited
@@ -676,14 +735,26 @@ const OrderEntry = ({ table, onClose, orderData, orderType = "delivery", onOrder
       toast({ title: "Cannot Edit", description: "Prepaid orders cannot be modified", variant: "destructive" });
       return;
     }
-    setCartItems([...cartItems, {
-      ...item,
-      qty: item.quantity || 1,
-      status: "preparing",
-      placed: false,
-      addedAt: new Date().toISOString()
-    }]);
+    // BUG-246: Merge identical customized items instead of always appending
+    const key = customizationKey(item);
+    const existingIndex = cartItems.findIndex(ci => !ci.placed && ci.customizations && customizationKey(ci) === key);
+    if (existingIndex >= 0) {
+      const updated = [...cartItems];
+      updated[existingIndex] = { ...updated[existingIndex], qty: updated[existingIndex].qty + (item.quantity || 1) };
+      setCartItems(updated);
+    } else {
+      setCartItems([...cartItems, {
+        ...item,
+        qty: item.quantity || 1,
+        status: "preparing",
+        placed: false,
+        addedAt: new Date().toISOString(),
+        _cartKey: genCartKey(), // BUG-374
+      }]);
+    }
     setCustomizationItem(null);
+    setFlashItemId(item.id || item.foodId);
+    setTimeout(() => setFlashItemId(null), 400);
   };
 
   // updateQuantity — differentiates placed vs unplaced items
@@ -731,7 +802,8 @@ const OrderEntry = ({ table, onClose, orderData, orderType = "delivery", onOrder
       return;
     }
     setCartItems(prev => prev.map(item => {
-      if (item.id !== itemId) return item;
+      // BUG-374: match by _cartKey when available — prevents same-food different-variation qty sync
+      if (item._cartKey ? item._cartKey !== itemId : item.id !== itemId) return item;
       // CR-010: Weight items — recalculate totalPrice from itemUnitPrice × weight
       if (item.isWeightItem) {
         const unitPrice = item.itemUnitPrice || item.price || 0;
@@ -767,7 +839,30 @@ const OrderEntry = ({ table, onClose, orderData, orderType = "delivery", onOrder
     setCartItems(prev => prev.map(item => {
       if (item.id !== itemId) return item;
       if (item.isComplementary === true) return item; // catalog lock
-      return { ...item, isComplementaryRuntime: !item.isComplementaryRuntime };
+      // CR-104: carry compReason — empty on toggle ON, cleared on toggle OFF
+      const nowComp = !item.isComplementaryRuntime;
+      return { ...item, isComplementaryRuntime: nowComp, compReason: nowComp ? (item.compReason || '') : '' };
+    }));
+  }, []);
+
+  // CR-104: update per-item complementary reason (optional inline input in Collect Bill)
+  // Only applies to runtime-comp items; never called for catalog-locked items.
+  const setCompReason = useCallback((itemId, reason) => {
+    setCartItems(prev => prev.map(item =>
+      item.id === itemId ? { ...item, compReason: reason } : item
+    ));
+  }, []);
+
+  // BUG-298 / BUG-299: qty-aware complementary handler — mirrors handleCancelFood pattern
+  const handleMarkComp = useCallback(({ item, compQty }) => {
+    setCartItems(prev => prev.map(i => {
+      if (i.id !== item.id) return i;
+      if (i.isComplementary === true) return i; // catalog lock
+      return {
+        ...i,
+        compQty,
+        isComplementaryRuntime: compQty > 0 && compQty >= (i.qty || 1),
+      };
     }));
   }, []);
 
@@ -1119,6 +1214,41 @@ const OrderEntry = ({ table, onClose, orderData, orderType = "delivery", onOrder
     navigateAfterOrderAction();
   };
 
+  // CR-163: Split items from room order — Path A (existing free table) or Path B (create "Room r2" table)
+  const handleSplitRoomItems = async (selectedIds, remark, destination) => {
+    const orderId = effectiveTable?.orderId || placedOrderId;
+    const roomNo = orderData?.roomInfo?.roomNo;
+    if (!orderId || selectedIds.length === 0 || !destination) return;
+
+    if (destination.type === 'existing') {
+      // Path A: split directly onto existing free dine-in table via target_table_id
+      await splitRoomOrder({
+        orderId,
+        orderDetailIds: selectedIds,
+        customerName: roomNo ? `Room ${roomNo}` : undefined,
+        remark,
+        targetTableId: destination.tableId,
+      });
+      // BUG-398: release destination table spinner + reload orders so new order appears
+      setTableEngaged(destination.tableId, false);
+      await refreshOrders();
+      toast({ title: 'Items Moved', description: `Moved to ${destination.label}` });
+    } else {
+      // Path B — Option A (CR-163 / BUG-399): split order stays as walk-in (table_id=0).
+      // No storeTable/switchOrderTable → order auto-disappears after payment like walk-in.
+      // Avoids permanent table creation, area creation, and manual refresh issues.
+      const tableName = `Room ${destination.roomNo || roomNo}`;
+      await splitRoomOrder({
+        orderId,
+        orderDetailIds: selectedIds,
+        customerName: tableName,
+        remark,
+      });
+      await refreshOrders();
+      toast({ title: 'Items Moved', description: `${tableName} items moved to Walk-In` });
+    }
+  };
+
   const handleMerge = async ({ selectedOrders }) => {
     const targetOrderId = effectiveTable?.orderId;
     const engagePromise = targetOrderId ? waitForOrderEngaged(targetOrderId) : null;
@@ -1198,7 +1328,8 @@ const OrderEntry = ({ table, onClose, orderData, orderType = "delivery", onOrder
     navigateAfterOrderAction();
   };
 
-  const handleCancelOrder = async (reason) => {
+  // CR-165: accept (reason, note) — note used only for Razorpay refund; backward-compatible (note='')
+  const handleCancelOrder = async (reason, note = '') => {
     const orderId = effectiveTable?.orderId || placedOrderId;
     if (!orderId) return;
 
@@ -1223,13 +1354,31 @@ const OrderEntry = ({ table, onClose, orderData, orderType = "delivery", onOrder
       title: "Order Cancelled",
       description: `Order cancelled for ${table?.label || table?.id}`,
     });
+
+    // CR-165: Trigger A — auto-refund for Razorpay PG orders
+    if (orderData?.razorpayOrderId) {
+      try {
+        await cancelAndRefund(orderId, reason?.reasonText || String(reason), note);
+        toast({ title: "Refund Initiated", description: "Razorpay refund has been initiated." });
+      } catch (err) {
+        console.error('[CR-165] Refund failed after cancel:', err);
+        toast({
+          title: "Refund Failed",
+          description: "Order cancelled but refund could not be initiated. Contact support.",
+          variant: "destructive",
+        });
+      }
+    }
+
     navigateAfterOrderAction();
   };
 
-  const handleAddCustomItem = async ({ name, categoryId, price, qty, notes }) => {    const payload = orderToAPI.addCustomItem(name, categoryId, price);
+  // CR-348: receive + forward tax fields from AddCustomItemModal
+  const handleAddCustomItem = async ({ name, categoryId, price, qty, notes, taxPercent = 0, taxCalc = 'Exclusive' }) => {
+    const payload = orderToAPI.addCustomItem(name, categoryId, price, taxPercent, taxCalc);
     const response = await api.post(API_ENDPOINTS.ADD_CUSTOM_ITEM, payload);
     const cartItem = customItemFromAPI(response.data.data, qty, notes);
-    setCartItems(prev => [...prev, cartItem]);
+    setCartItems(prev => [...prev, { ...cartItem, _cartKey: genCartKey() }]); // BUG-374
     toast({
       title: "Custom Item Added",
       description: `${cartItem.name} added to order`,
@@ -1372,6 +1521,11 @@ const OrderEntry = ({ table, onClose, orderData, orderType = "delivery", onOrder
                   gstTax:              paymentData?.printGstTax,
                   vatTax:              paymentData?.printVatTax,
                   tip:                 paymentData?.tip || 0,
+                  custGST:             paymentData?.custGST     || '',  // BUG-281
+                  custGSTName:         paymentData?.custGSTName || '',  // BUG-281
+                  restaurantPhone:     restaurant?.phone        || '', // BUG-328
+                  paymentStatus:       'paid',                                                                      // BUG-556
+                  paymentMethod:       paymentData?.splitPayments?.length > 0 ? 'partial' : (paymentData?.method || ''), // BUG-556
                   ...(orderType === 'delivery' && selectedAddress ? { deliveryAddress: selectedAddress } : {}),
                 };
                 printOrder(Number(newOrderId), 'bill', null, order, restaurant?.serviceChargePercentage || 0, overrides, printerAgents || [])
@@ -1410,6 +1564,11 @@ const OrderEntry = ({ table, onClose, orderData, orderType = "delivery", onOrder
                       gstTax:              paymentData?.printGstTax,
                       vatTax:              paymentData?.printVatTax,
                       tip:                 paymentData?.tip || 0,
+                      custGST:             paymentData?.custGST     || '',  // BUG-281
+                      custGSTName:         paymentData?.custGSTName || '',  // BUG-281
+                      restaurantPhone:     restaurant?.phone        || '', // BUG-328
+                      paymentStatus:       'paid',                                                                      // BUG-556
+                      paymentMethod:       paymentData?.splitPayments?.length > 0 ? 'partial' : (paymentData?.method || ''), // BUG-556
                       ...(orderType === 'delivery' && selectedAddress ? { deliveryAddress: selectedAddress } : {}),
                     };
                     printOrder(Number(newOrderId), 'bill', null, order, restaurant?.serviceChargePercentage || 0, overrides, printerAgents || [])
@@ -1482,6 +1641,11 @@ const OrderEntry = ({ table, onClose, orderData, orderType = "delivery", onOrder
                 gstTax:              paymentData?.printGstTax,
                 vatTax:              paymentData?.printVatTax,
                 tip:                 paymentData?.tip || 0,
+                custGST:             paymentData?.custGST     || '',  // BUG-281
+                custGSTName:         paymentData?.custGSTName || '',  // BUG-281
+                restaurantPhone:     restaurant?.phone        || '', // BUG-328
+                paymentStatus:       'paid',                                                                      // BUG-556
+                paymentMethod:       paymentData?.splitPayments?.length > 0 ? 'partial' : (paymentData?.method || ''), // BUG-556
                 ...(orderType === 'delivery' && selectedAddress ? { deliveryAddress: selectedAddress } : {}),
               };
               await printOrder(Number(collectOrderId), 'bill', null, orderForPrint, restaurant?.serviceChargePercentage || 0, overrides, printerAgents || []);
@@ -1520,15 +1684,18 @@ const OrderEntry = ({ table, onClose, orderData, orderType = "delivery", onOrder
           onCategoryChange={(id) => setActiveCategory(id)}
           onBack={onClose}
           categories={categories}
+          showPopularCategory={showPopularCategory} // CR-148
+          activeMenuProducts={activeMenuProducts} // CR-376-FU-B
+          popularProducts={popularProducts} // CR-376-FU-B
         />
 
         {/* MIDDLE PANEL - Menu Items */}
         {/* BUG-134: min-h-0 required for overflow-y-auto to work on Windows Chrome */}
-        <div className="flex-1 flex flex-col min-h-0" style={{ borderRight: `1px solid ${COLORS.borderGray}` }}>
+        <div className="flex-1 flex flex-col min-h-0 min-w-0" style={{ borderRight: `1px solid ${COLORS.borderGray}` }}> {/* BUG-555 A4 */}
           {/* Single Compact Header Row: Search + Action Icons */}
-          <div className="px-4 py-3 flex-shrink-0 flex items-center gap-3" style={{ borderBottom: `1px solid ${COLORS.borderGray}` }}>
+          <div className="px-4 py-3 flex-shrink-0 flex flex-wrap items-center gap-3 gap-y-2" style={{ borderBottom: `1px solid ${COLORS.borderGray}` }}> {/* BUG-555 A5 */}
             {/* Search Input - Limited width */}
-            <div className="relative flex-1 max-w-xs">
+            <div className="relative flex-1 max-w-xs min-w-[140px]"> {/* BUG-555 A6 */}
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4" style={{ color: COLORS.primaryOrange }} />
               <input
                 data-testid="menu-search-input"
@@ -1566,8 +1733,20 @@ const OrderEntry = ({ table, onClose, orderData, orderType = "delivery", onOrder
               </span>
             )}
 
+            {/* CR-376: Active menu chip — visible only when non-Normal menu is active */}
+            {/* BUG-464: suppress " Menu" suffix when type name already ends with "menu" (e.g. "FOOD MENU" → "FOOD MENU", "Premium" → "Premium Menu") */}
+            {activeMenuType && activeMenuType !== 'Normal' && (
+              <span
+                data-testid="active-menu-type-chip"
+                className="text-xs px-2 py-1 rounded-full font-medium flex-shrink-0"
+                style={{ backgroundColor: '#FFF3E0', color: COLORS.primaryOrange, border: `1px solid ${COLORS.primaryOrange}` }}
+              >
+                {/menu$/i.test(activeMenuType) ? activeMenuType : `${activeMenuType} Menu`}
+              </span>
+            )}
+
             {/* Action Icons: Plus, Customer, Notes, Shift, Merge */}
-            <div className="flex items-center gap-3 flex-shrink-0">
+            <div className="flex items-center gap-3 flex-shrink-0 ml-auto"> {/* BUG-555 A10 */}
               {/* Add Custom Item */}
               <button
                 onClick={() => setShowCustomItemModal(true)}
@@ -1632,6 +1811,20 @@ const OrderEntry = ({ table, onClose, orderData, orderType = "delivery", onOrder
 
           {/* Menu Items - Pill Layout */}
           <div className="flex-1 overflow-y-auto p-4" style={{ opacity: isPlacingOrder ? 0.5 : 1, pointerEvents: isPlacingOrder ? 'none' : 'auto' }}>
+            {/* CR-376: OD-376-06 — empty-state when active menu has no configured items */}
+            {/* BUG-462: replaced `activeMenuType !== 'Normal'` guard with `availableMenuTypes.length > 1` —
+                Normal-only restaurants (length=1) never see this; multi-menu restaurants (length>1) correctly
+                see empty-state on first boot when no active-menu products exist (e.g. QA_HYATT). */}
+            {availableMenuTypes.length > 1 && activeMenuProducts.filter(p => p.isActive && !p.isDisabled).length === 0 ? (
+              <div className="flex flex-col items-center justify-center h-full text-center px-6 py-12" data-testid="active-menu-empty-state">
+                <p className="text-sm font-semibold mb-1" style={{ color: COLORS.primaryOrange }}>
+                  {activeMenuType} menu has no items configured.
+                </p>
+                <p className="text-xs" style={{ color: COLORS.grayText }}>
+                  Please update in Local Settings.
+                </p>
+              </div>
+            ) : (
             <div className="flex flex-wrap gap-3">
               {getFilteredItems().map(item => {
                 const cartCount = cartCountMap[item.id] || 0;
@@ -1650,7 +1843,7 @@ const OrderEntry = ({ table, onClose, orderData, orderType = "delivery", onOrder
                       transform: isFlashing ? "scale(1.03)" : "scale(1)",
                     }}
                   >
-                    <span>{item.name}</span>
+                    <span>{item.itemCode ? `[${item.itemCode}] ` : ''}{item.name}</span>
                     {/* CR-010: Weight item badge */}
                     {item.isWeightItem && (
                       <span className="text-xs px-1.5 py-0.5 rounded-full font-medium" style={{ backgroundColor: '#EFF6FF', color: '#2563EB' }}>
@@ -1672,6 +1865,7 @@ const OrderEntry = ({ table, onClose, orderData, orderType = "delivery", onOrder
                 );
               })}
             </div>
+            )}
           </div>
         </div>
 
@@ -1715,6 +1909,9 @@ const OrderEntry = ({ table, onClose, orderData, orderType = "delivery", onOrder
               // BUG-018 Part 2 (Apr-2026): runtime-complimentary toggle callback.
               // Cashier-driven per-item marking; catalog-complimentary items locked.
               onToggleComplimentary={toggleItemComplimentary}
+              onSetCompReason={setCompReason} // CR-104: optional inline reason for runtime-comp items
+              // BUG-298 / BUG-299: partial comp via MarkCompModal on Collect Bill
+              onSetCompItem={setCompItem}
               // BUG-019 (Apr-2026): seed delivery-charge input from backend-echoed value
               // (scan orders / re-engaged delivery orders). CollectPaymentPanel renders
               // the field readOnly when this value > 0.
@@ -1746,6 +1943,15 @@ const OrderEntry = ({ table, onClose, orderData, orderType = "delivery", onOrder
                   ? (Number(deliveryCharge) || 0)
                   : (orderFinancials.deliveryCharge || (Number(deliveryCharge) || 0))
               }
+              // CR-413: initialCoupon prop removed — cashier always chooses coupon (OD-INV-01=A)
+              // CR-412: pre-tick loyalty from scan & order when redeemed=true (OD-INV-02=B).
+              initialLoyalty={
+                orderData?.loyaltyRedeemed ? { redeemed: true } : null
+              }
+              // BUG-538: role-base discount gate + pre-seed from order_discount_json
+              canDiscount={canDiscount}
+              orderId={placedOrderId || orderData?.orderId || null}
+              initialDiscount={liveOrder?.orderDiscountJson || orderData?.orderDiscountJson || null} // BUG-595: liveOrder reads directly from orders context (socket-reactive) — orderData prop lags behind DashboardPage re-render
               // BUG-004 (QA, Apr 2026): expose Split Bill trigger from the Collect
               // Payment screen. Only provided when eligible: postpaid placed
               // dine-in/walk-in order with 2+ placed items.
@@ -1879,6 +2085,11 @@ const OrderEntry = ({ table, onClose, orderData, orderType = "delivery", onOrder
                       gstTax:              paymentData?.printGstTax,
                       vatTax:              paymentData?.printVatTax,
                       tip:                 paymentData?.tip || 0,
+                      custGST:             paymentData?.custGST     || '',  // BUG-281
+                      custGSTName:         paymentData?.custGSTName || '',  // BUG-281
+                      restaurantPhone:     restaurant?.phone        || '', // BUG-328
+                      paymentStatus:       'paid',                                                                      // BUG-556
+                      paymentMethod:       paymentData?.splitPayments?.length > 0 ? 'partial' : (paymentData?.method || ''), // BUG-556
                       // BUG-012: inject delivery address for print
                       ...(orderType === 'delivery' && selectedAddress ? { deliveryAddress: selectedAddress } : {}),
                     };
@@ -2160,6 +2371,10 @@ const OrderEntry = ({ table, onClose, orderData, orderType = "delivery", onOrder
                             gstTax:              paymentData?.printGstTax,
                             vatTax:              paymentData?.printVatTax,
                             tip:                 paymentData?.tip || 0,
+                            custGST:             paymentData?.custGST     || '',  // BUG-281
+                            custGSTName:         paymentData?.custGSTName || '',  // BUG-281
+                            paymentStatus:       'paid',                                                                      // BUG-556
+                            paymentMethod:       paymentData?.splitPayments?.length > 0 ? 'partial' : (paymentData?.method || ''), // BUG-556
                             // BUG-012: inject delivery address for print
                             ...(orderType === 'delivery' && selectedAddress ? { deliveryAddress: selectedAddress } : {}),
                             // BUG-021 (Apr-2026, v2): forward runtime-complimentary
@@ -2434,6 +2649,7 @@ const OrderEntry = ({ table, onClose, orderData, orderType = "delivery", onOrder
                 setEditingQtyItemId={setEditingQtyItemId}
                 updateQuantity={updateQuantity}
                 setCancelItem={setCancelItem}
+                // BUG-298 / BUG-299: comp handled via CollectPaymentPanel, not CartPanel
                 setTransferItem={setTransferItem}
                 handlePlaceOrder={handlePlaceOrder}
                 isPlacingOrder={isPlacingOrder}
@@ -2500,6 +2716,7 @@ const OrderEntry = ({ table, onClose, orderData, orderType = "delivery", onOrder
                 setIsScheduled={setIsScheduled}
                 scheduleAt={scheduleAt}
                 setScheduleAt={setScheduleAt}
+                onSplitItems={table?.isRoom ? () => setShowSplitModal(true) : null}
               />
             </>
           )}
@@ -2623,6 +2840,16 @@ const OrderEntry = ({ table, onClose, orderData, orderType = "delivery", onOrder
       {transferItem && table && (
         <TransferFoodModal item={transferItem} currentTable={table} orders={orders} onClose={() => setTransferItem(null)} onTransfer={handleTransfer} />
       )}
+      {showSplitModal && table?.isRoom && (
+        <SplitRoomItemsModal
+          cartItems={cartItems}
+          // BUG-398: fallback to table.label (tableEntry has label not tableNumber)
+          roomNo={orderData?.roomInfo?.roomNo || table?.label}
+          onClose={() => setShowSplitModal(false)}
+          onSplit={handleSplitRoomItems}
+          freeTables={freeDineInTables}
+        />
+      )}
       {showMergeModal && table && (
         <MergeTableModal currentTable={table} orders={orders} onClose={() => setShowMergeModal(false)} onMerge={handleMerge} />
       )}
@@ -2632,6 +2859,13 @@ const OrderEntry = ({ table, onClose, orderData, orderType = "delivery", onOrder
       {cancelItem && (
         <CancelFoodModal item={cancelItem} reasons={getItemCancellationReasons()} onClose={() => setCancelItem(null)} onCancel={handleCancelFood} />
       )}
+      {compItem && (
+        <MarkCompModal
+          item={compItem}
+          onClose={() => setCompItem(null)}
+          onMark={handleMarkComp}
+        />
+      )}
       {showCancelOrderModal && (
         <CancelOrderModal
           table={table}
@@ -2639,6 +2873,7 @@ const OrderEntry = ({ table, onClose, orderData, orderType = "delivery", onOrder
           reasons={getOrderCancellationReasons()}
           onClose={() => setShowCancelOrderModal(false)}
           onCancel={handleCancelOrder}
+          mode={orderData?.razorpayOrderId ? 'refund' : 'cancel'}
         />
       )}
       {showCustomItemModal && (
@@ -2647,6 +2882,7 @@ const OrderEntry = ({ table, onClose, orderData, orderType = "delivery", onOrder
           products={products}
           onClose={() => setShowCustomItemModal(false)}
           onAdd={handleAddCustomItem}
+          showGst={!!(restaurant?.tax?.gstStatus || (restaurant?.tax?.gstPercentage || 0) > 0)}
         />
       )}
       {showCustomerModal && (
@@ -2659,7 +2895,7 @@ const OrderEntry = ({ table, onClose, orderData, orderType = "delivery", onOrder
           customerIntelLoading={customerIntelLoading}
           onAddToCart={addToCart}
           onCustomizeItem={setCustomizationItem}
-          menuItems={products.filter(p => p.isActive && !p.isDisabled).map(adaptProduct)}
+          menuItems={activeMenuProducts.filter(p => p.isActive && !p.isDisabled).map(adaptProduct)} // CR-376: OD-376-07=(a) scope to active menu; off-menu suggestions become inert
           cartItems={cartItems}
           orderType={orderType}
         />
@@ -2776,6 +3012,23 @@ const OrderEntry = ({ table, onClose, orderData, orderType = "delivery", onOrder
             setShowSplitBillModal(false);
           }}
         />
+      )}
+      {/* BUG-555 WP-A (OD-555-02=c): sibling layer — OrderEntry stays mounted, cart/customer/search preserved */}
+      {isRotateBlocked && (
+        <div
+          data-testid="order-entry-rotate-overlay"
+          role="dialog" aria-modal="true" aria-labelledby="oe-rotate-title"
+          className="absolute inset-0 z-[120] backdrop-blur flex flex-col items-center justify-center text-center px-10"
+          style={{ backgroundColor: "rgba(26,26,26,0.95)" }}
+        >
+          <RotateCw className="w-24 h-24 mb-6" style={{ color: COLORS.primaryOrange }} />
+          <h2 id="oe-rotate-title" className="text-2xl font-bold text-white mb-2">Rotate your tablet</h2>
+          <p className="text-sm max-w-xs" style={{ color: "#CFCFCF" }}>Order Entry works in landscape. Turn your tablet sideways to continue.</p>
+          <p data-testid="order-entry-rotate-cart-kept" className="mt-6 text-xs px-3 py-1.5 rounded-full text-white"
+             style={{ border: `1px solid ${COLORS.primaryGreen}`, backgroundColor: "rgba(50,153,55,0.25)" }}>
+            Your order and cart are kept
+          </p>
+        </div>
       )}
     </div>
   );
