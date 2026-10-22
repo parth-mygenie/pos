@@ -1,40 +1,33 @@
-# MyGenie POS Frontend — Deployment Record
+# MyGenie POS — Deployment Record
 
 ## Original Problem Statement
-Deploy the existing React frontend repo (https://github.com/Abhi-mygenie/core-pos-front-end-.git, branch: main) directly into /app and run as-is with no code edits. Preserve platform files, set env variables, and keep memory dir in sync with remote.
+Deploy the existing React frontend repo (parth-mygenie/pos.git, branch qabatch22oct) directly into /app and run it as-is with no code edits.
 
 ## Architecture
-- **Stack**: React 19 + CRACO + Tailwind CSS + Radix UI + Firebase
-- **Process Manager**: Supervisor (`yarn start` → `craco start` on port 3000)
-- **Backend API**: External (https://preprod.mygenie.online/)
-- **Socket**: External (https://presocket.mygenie.online)
-- **Auth**: Firebase
+- **Frontend**: React (CRA + Craco) on port 3000
+- **Backend**: FastAPI on port 8001 (platform default, minimal)
+- **Database**: MongoDB (platform default)
+- **Branch**: qabatch22oct
+- **Process Manager**: Supervisor
 
-## What's Been Implemented
-- **2026-10-21**: Fresh clone from `main` branch (commit `8d26b678`) into /app
-  - Platform files preserved (.emergent/, .git/, .env files)
-  - All env variables configured (Firebase, API, Socket, CRM, Google Maps)
-  - Memory dir fully synced (2408 files, 14 subdirs)
-  - yarn install completed, webpack compiles with only lint warnings
-  - App responds on port 3000 with MyGenie login page
+## What's Been Implemented (2026-10-22)
+- Cloned repo from GitHub (branch qabatch22oct) into /app
+- Preserved platform files (.emergent/)
+- Synced full memory directory from repo
+- Created .env with all provided environment variables
+- Installed frontend dependencies (yarn install --frozen-lockfile)
+- Frontend compiles and serves successfully on port 3000
+- Verified HTTP 200 on both localhost and external preview URL
+- Login page renders correctly
 
-## Preserved Platform Files
-- `/app/.emergent/` — platform config
-- `/app/.git/` — platform git
-- `/app/frontend/.env` — all env variables
-- `/app/backend/.env` — MongoDB, CORS config
+## Environment Variables Configured
+- REACT_APP_API_BASE_URL, REACT_APP_SOCKET_URL
+- Firebase config (API key, auth domain, project ID, storage bucket, messaging sender ID, app ID, measurement ID, VAPID key)
+- REACT_APP_CRM_BASE_URL, REACT_APP_CRM_API_KEYS
+- REACT_APP_GOOGLE_MAPS_KEY
+- REACT_APP_SHOW_AUDIT_TAB=true
 
-## Re-pull Procedure
-1. Backup: `.emergent/`, `.git/`, `frontend/.env`, `backend/.env`
-2. Wipe /app (keep .emergent, .git)
-3. Clone from `main` branch to staging dir
-4. Copy contents (excl .git, .emergent) to /app
-5. Restore .env files
-6. `yarn install` in /app/frontend
-7. `supervisorctl restart frontend`
-8. Verify: compilation + HTTP 200 + memory sync
-
-## Backlog
-- P0: None (deployment complete)
-- P1: Environment variable updates as needed
-- P2: Production build optimization
+## Status
+- Frontend: RUNNING, compiled successfully
+- Memory dir: Fully synced with remote branch (0 diff)
+- No code edits made — deployed as-is
