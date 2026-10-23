@@ -1115,3 +1115,15 @@ All items below advanced to **Gate 5b — QA PASS** on 2026-09-15. Awaiting Gate
 
 **BATCH-10 (Regression): ❌ FAIL — 53/56 PASS, 2 new bugs filed (BUG-400 MAJOR, BUG-401 BLOCKER). See `test_reports/QA_REPORT_BATCH10_2026_09_15.md`**
 | **CR-407** | Room Discount — check-in discount + checkout apply_to (food/both) + Percent type + partial_payments_room | **P1** | **CRITICAL** | **GATE_5A_IMPLEMENTED.** Sub-scope A: CheckInPage.jsx (A-E1..A-E4) + pmsService.js (A-E5) — check-in discount UI + ₹/% toggle + FE computes ₹. Sub-scope B: FolioCheckoutPanel.jsx (B-E1..B-E6) — apply_to selector + Percent type + expanded handlePaid. Sub-scope C: FolioCheckoutPanel.jsx (C-E1..C-E3) — partial_payments_room split legs. Sprint: oct_cr_batch. | `CheckInPage.jsx` · `pmsService.js` · `FolioCheckoutPanel.jsx` |
+**Last Updated:** 2026-10-22 (QA ROLE — BATCH QA-1, QA-2, QA-4, QA-5 PASSED). **8 CRs QA-verified:**
+- **CR-429** GATE_5A_IMPLEMENTED → **QA_PASSED** (Active First toggle — Channel View. 10/10 PASS. Occupied sort, persist, Status View unaffected.)
+- **CR-430** GATE_5A_IMPLEMENTED → **QA_PASSED** (Auto-expand Served Items toggle. 8/9 PASS, 1 NOTE. Toggle visible, save/persist/reset all work.)
+- **CR-435** GATE_5A_IMPLEMENTED → **QA_PASSED** (Sidebar Inventory links removed. 6/6 PASS. Direct navigation, highlight, TabBar intact.)
+- **CR-377** GATE_5A_IMPLEMENTED → **QA_PASSED** (Sales Report redesign. 6 PASS, 1 NOTE. Title renamed, 6 KPI cards with P&L, Room section visible.)
+- **CR-408** GATE_5A_IMPLEMENTED → **QA_PASSED** (Coupon auto-apply remove. grep verified. Auto-apply useEffect deleted.)
+- **CR-409** GATE_5A_IMPLEMENTED → **QA_PASSED** (Coupon fields in orderTransform. Unit tests 4/4. initialCoupon removed by CR-413.)
+- **CR-411** GATE_5A_IMPLEMENTED → **QA_PASSED** (Cart persists on type/table switch. V-10 cancel clears cart confirmed. Structural 15/15.)
+- **CR-412** GATE_5A_IMPLEMENTED → **QA_PASSED** (Loyalty pre-tick. loyaltyRedeemed field + initialLoyalty prop confirmed.)
+- **CR-413** GATE_5A_IMPLEMENTED → **QA_PASSED** (Remove initialCoupon pre-load. Prop + useEffect deleted, only markers remain. Unit 4/4.)
+- **CR-407** GATE_5A_IMPLEMENTED → **QA_PASSED** (Room discount via BUG-489. 13/13 code-level PASS. Browser blocked by no arrivals.)
+QA reports: `/app/memory/test_reports/QA_REPORT_QA-{1,2,4,5}_2026_10_22.md`. registry.json updated. workflow_queue.json batches → DONE.

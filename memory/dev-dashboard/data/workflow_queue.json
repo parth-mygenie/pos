@@ -3,10 +3,10 @@
     {
       "batch_id": "QA-1",
       "stage": "qa",
-      "status": "QUEUED",
+      "status": "DONE",
       "priority": "P0",
       "sprint": "nov_cr_batch",
-      "title": "nov_cr_batch \u2014 Active Table Toggle + Served Card Height",
+      "title": "nov_cr_batch — Active Table Toggle + Served Card Height",
       "risk": "HIGH",
       "item_count": 2,
       "items": [
@@ -16,15 +16,17 @@
       "handovers": {
         "CR-429": "QA_HANDOVER_CR429_2026_10_17.md",
         "CR-430": "QA_HANDOVER_CR430_TOGGLE_UI_2026_10_17.md"
-      }
+      },
+      "qa_date": "2026-10-22",
+      "qa_result": "PASSED"
     },
     {
       "batch_id": "QA-2",
       "stage": "qa",
-      "status": "QUEUED",
+      "status": "DONE",
       "priority": "P0",
       "sprint": "oct_cr_batch",
-      "title": "oct_cr_batch \u2014 PWA + Reports + Auto-Bill",
+      "title": "oct_cr_batch — PWA + Reports + Auto-Bill",
       "risk": "HIGH",
       "item_count": 7,
       "items": [
@@ -44,7 +46,9 @@
         "BUG-556": "QA_HANDOVER_BUG556_2026_10_16.md",
         "CR-435": "QA_HANDOVER_CR435_2026_10_18.md",
         "CR-377": "QA_HANDOVER_CR377_2026_09_11.md"
-      }
+      },
+      "qa_date": "2026-10-22",
+      "qa_result": "PASSED"
     },
     {
       "batch_id": "QA-3",
@@ -52,7 +56,7 @@
       "status": "QUEUED",
       "priority": "P0",
       "sprint": "oct_cr_batch",
-      "title": "oct_cr_batch \u2014 Dashboard Tablet Responsive (CR-414 + BUG-537)",
+      "title": "oct_cr_batch — Dashboard Tablet Responsive (CR-414 + BUG-537)",
       "risk": "HIGH",
       "item_count": 2,
       "items": [
@@ -68,10 +72,10 @@
     {
       "batch_id": "QA-4",
       "stage": "qa",
-      "status": "QUEUED",
+      "status": "DONE",
       "priority": "P0",
       "sprint": "oct_cr_batch",
-      "title": "oct_cr_batch \u2014 Coupon / Loyalty / Cart (CR-408 to CR-413)",
+      "title": "oct_cr_batch — Coupon / Loyalty / Cart (CR-408 to CR-413)",
       "risk": "CRITICAL",
       "item_count": 5,
       "items": [
@@ -88,15 +92,17 @@
         "CR-412": "QA_HANDOVER_CR412_2026_10_12.md",
         "CR-413": "QA_HANDOVER_CR413_2026_10_12.md"
       },
-      "notes": "CR-409 adds coupon pre-load; CR-413 REMOVES it. Final state: CPP opens with NO coupon pre-loaded."
+      "notes": "CR-409 adds coupon pre-load; CR-413 REMOVES it. Final state: CPP opens with NO coupon pre-loaded.",
+      "qa_date": "2026-10-22",
+      "qa_result": "PASSED"
     },
     {
       "batch_id": "QA-5",
       "stage": "qa",
-      "status": "QUEUED",
+      "status": "DONE",
       "priority": "P0",
       "sprint": "oct_cr_batch",
-      "title": "oct_cr_batch \u2014 Room Discount Feature (CR-407)",
+      "title": "oct_cr_batch — Room Discount Feature (CR-407)",
       "risk": "CRITICAL",
       "item_count": 1,
       "items": [
@@ -105,7 +111,9 @@
       "handovers": {
         "CR-407": "QA_HANDOVER_BUG489_2026_10_05.md"
       },
-      "notes": "CR-407 coverage via BUG-489 handover which tests CR-407 Sub-scope A on front-desk-v2"
+      "notes": "CR-407 coverage via BUG-489 handover which tests CR-407 Sub-scope A on front-desk-v2",
+      "qa_date": "2026-10-22",
+      "qa_result": "PASSED"
     },
     {
       "batch_id": "QA-6",
@@ -113,7 +121,7 @@
       "status": "QUEUED",
       "priority": "P0",
       "sprint": "oct_bug_batch",
-      "title": "oct_bug_batch \u2014 PMS Check-In Wave A: GST & Discount Foundations (13 items)",
+      "title": "oct_bug_batch — PMS Check-In Wave A: GST & Discount Foundations (13 items)",
       "risk": "CRITICAL",
       "item_count": 13,
       "items": [
@@ -146,7 +154,7 @@
         "BUG-500": "QA_HANDOVER_BUG496_497_500_501_2026_10_07.md",
         "BUG-501": "QA_HANDOVER_BUG496_497_500_501_2026_10_07.md"
       },
-      "notes": "Run in handover-date order \u2014 earlier fixes are dependencies for later ones. Use palmhouse account."
+      "notes": "Run in handover-date order — earlier fixes are dependencies for later ones. Use palmhouse account."
     },
     {
       "batch_id": "QA-7",
@@ -154,7 +162,7 @@
       "status": "QUEUED",
       "priority": "P0",
       "sprint": "oct_bug_batch",
-      "title": "oct_bug_batch \u2014 PMS Check-In Wave B: Balance / GST / Alert UX (8 items)",
+      "title": "oct_bug_batch — PMS Check-In Wave B: Balance / GST / Alert UX (8 items)",
       "risk": "CRITICAL",
       "item_count": 8,
       "items": [
@@ -177,7 +185,7 @@
         "BUG-507": "QA_HANDOVER_BUG506_507_2026_10_07.md",
         "BUG-498": "QA_HANDOVER_FU385D_BUG525_2026_10_09.md"
       },
-      "notes": "BUG-504 is P0 money \u2014 test first."
+      "notes": "BUG-504 is P0 money — test first."
     },
     {
       "batch_id": "QA-8",
@@ -185,7 +193,7 @@
       "status": "QUEUED",
       "priority": "P0",
       "sprint": "oct_bug_batch",
-      "title": "oct_bug_batch \u2014 PMS Check-In Wave C: Confirm Guard + Group Check-In (4 items)",
+      "title": "oct_bug_batch — PMS Check-In Wave C: Confirm Guard + Group Check-In (4 items)",
       "risk": "CRITICAL",
       "item_count": 4,
       "items": [
@@ -200,7 +208,7 @@
         "BUG-512": "QA_HANDOVER_BUG513_2026_10_08.md",
         "BUG-514": "QA_HANDOVER_BUG514_2026_10_08.md"
       },
-      "notes": "BUG-513 handover explicitly covers BUG-511 + BUG-512 sweep \u2014 all three in one handover file."
+      "notes": "BUG-513 handover explicitly covers BUG-511 + BUG-512 sweep — all three in one handover file."
     },
     {
       "batch_id": "QA-9",
@@ -208,7 +216,7 @@
       "status": "QUEUED",
       "priority": "P1",
       "sprint": "oct_bug_batch",
-      "title": "oct_bug_batch \u2014 PMS In-House / VAT Labels / Room Controls (6 items)",
+      "title": "oct_bug_batch — PMS In-House / VAT Labels / Room Controls (6 items)",
       "risk": "CRITICAL",
       "item_count": 6,
       "items": [
@@ -234,7 +242,7 @@
       "status": "QUEUED",
       "priority": "P1",
       "sprint": "oct_bug_batch",
-      "title": "oct_bug_batch \u2014 PMS CPP Split + Folio Checkout (8 items)",
+      "title": "oct_bug_batch — PMS CPP Split + Folio Checkout (8 items)",
       "risk": "CRITICAL",
       "item_count": 8,
       "items": [
@@ -257,7 +265,7 @@
         "BUG-530": "QA_HANDOVER_BUG530_2026_10_10.md",
         "BUG-529": "QA_HANDOVER_BUG529_531_2026_10_10.md"
       },
-      "notes": "BUG-529 is P0 (double-discount regression) \u2014 prioritise."
+      "notes": "BUG-529 is P0 (double-discount regression) — prioritise."
     },
     {
       "batch_id": "QA-11",
@@ -265,7 +273,7 @@
       "status": "QUEUED",
       "priority": "P1",
       "sprint": "oct_bug_batch",
-      "title": "oct_bug_batch \u2014 PMS In-House Balance + Extend Stay (4 items)",
+      "title": "oct_bug_batch — PMS In-House Balance + Extend Stay (4 items)",
       "risk": "CRITICAL",
       "item_count": 4,
       "items": [
@@ -287,7 +295,7 @@
       "status": "QUEUED",
       "priority": "P1",
       "sprint": "pos_pms_1",
-      "title": "pos_pms_1 \u2014 New CheckInPage + Old Modal (BUG-411 + BUG-410)",
+      "title": "pos_pms_1 — New CheckInPage + Old Modal (BUG-411 + BUG-410)",
       "risk": "CRITICAL",
       "item_count": 2,
       "items": [
@@ -305,7 +313,7 @@
       "status": "QUEUED",
       "priority": "P1",
       "sprint": "pos_pms_1",
-      "title": "pos_pms_1 \u2014 Folio + In-House Balance + Room Orders GST (7 items)",
+      "title": "pos_pms_1 — Folio + In-House Balance + Room Orders GST (7 items)",
       "risk": "CRITICAL",
       "item_count": 7,
       "items": [
@@ -326,7 +334,7 @@
         "BUG-429": "QA_HANDOVER_BATCH2_BUG426-430_2026_09_16.md",
         "BUG-430": "QA_HANDOVER_BATCH2_BUG426-430_2026_09_16.md"
       },
-      "notes": "Cumulative fixes \u2014 test BATCHA first (424/425), then BATCH2 (426-430)."
+      "notes": "Cumulative fixes — test BATCHA first (424/425), then BATCH2 (426-430)."
     },
     {
       "batch_id": "QA-14",
@@ -334,7 +342,7 @@
       "status": "QUEUED",
       "priority": "P1",
       "sprint": "pos_pms_2",
-      "title": "pos_pms_2 \u2014 Check-In Form + In-House Page + Old Modal (5 items)",
+      "title": "pos_pms_2 — Check-In Form + In-House Page + Old Modal (5 items)",
       "risk": "HIGH",
       "item_count": 5,
       "items": [
@@ -358,7 +366,7 @@
       "status": "QUEUED",
       "priority": "P1",
       "sprint": "sep_bug_closure",
-      "title": "sep_bug_closure \u2014 Inventory Stock + Registry Export (3 items)",
+      "title": "sep_bug_closure — Inventory Stock + Registry Export (3 items)",
       "risk": "HIGH",
       "item_count": 3,
       "items": [
@@ -378,7 +386,7 @@
       "status": "QUEUED",
       "priority": "P2",
       "sprint": "TBD",
-      "title": "CR-388 \u2014 Editable min alert unit field (Inventory)",
+      "title": "CR-388 — Editable min alert unit field (Inventory)",
       "risk": "MEDIUM",
       "item_count": 1,
       "items": [
